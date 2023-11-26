@@ -1,0 +1,2 @@
+# HandwritingGenerator
+HandwritingGenerator，一个使用PyQt6制作的手写文本图片生成器，可以自定义多种效果。
