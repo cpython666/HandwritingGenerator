@@ -1,10 +1,128 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene,QWidget,QHBoxLayout,QVBoxLayout,QLabel,
-                             QGraphicsPixmapItem, QGraphicsRectItem, QMainWindow,QFormLayout,QSpinBox,QDoubleSpinBox,
-                             QGraphicsTextItem, QPushButton,QInputDialog,QFontComboBox,QComboBox,
-                             QSlider,QVBoxLayout,QFileDialog,QColorDialog,QTextEdit)
-from PyQt6.QtCore import Qt, QRectF, Qt
-from PyQt6.QtGui import QPixmap, QPainter, QImage, QFont, QKeySequence,QShortcut,QFont, QFontDatabase,QColor,QIcon
+                             QGraphicsPixmapItem, QGraphicsRectItem, QMainWindow,
+                             QGraphicsTextItem, QPushButton,QInputDialog,QComboBox,
+                             QSlider,QVBoxLayout,QFileDialog,QColorDialog,QTextEdit,QDialog,QLineEdit)
+from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import (QGuiApplication,QPixmap, 
+                         QPainter, QImage, QFont, 
+                         QKeySequence,QShortcut,QFont, 
+                         QFontDatabase,QColor,QIcon)
+
+class ImageCreator(QDialog):
+    def __init__(self):
+        super().__init__()
+
+        self.initUI()
+        self.initLayout()
+        self.center()
+    
+    def initUI(self):
+        self.setWindowTitle('输出一个纯色背景图片')
+        self.setGeometry(100,100,300,300)
+        self.setWindowIcon(QIcon('logo.png'))
+    
+    def center(self):
+        qr=self.frameGeometry()
+        cp=QGuiApplication.primaryScreen().availableGeometry().center()
+        qr.moveCenter(cp)
+        self.move(qr.topLeft())
+
+    def initLayout(self):
+
+        self.color_label = QLabel('当前颜色:(255,255,255,255)', self)
+        self.color_button = QPushButton('选择颜色', self)
+        self.color=QColor('black')
+        self.color_button.clicked.connect(self.showColorDialog)
+        color_layout=QHBoxLayout()
+        color_layout.addStretch(1)
+        color_layout.addWidget(self.color_label)
+        color_layout.addWidget(self.color_button)
+        color_layout.addStretch(1)
+
+        self.bg_a=QLabel('图片不透明度：255')
+        self.bg_a_slider=QSlider(Qt.Orientation.Horizontal)
+        self.bg_a_slider.setRange(0, 255)
+        self.bg_a_slider.setSingleStep(1)
+        self.bg_a_slider.setValue(255)
+        bg_a_layout=QHBoxLayout()
+        bg_a_layout.addStretch(1)
+        bg_a_layout.addWidget(self.bg_a)
+        bg_a_layout.addWidget(self.bg_a_slider)
+        bg_a_layout.addStretch(1)
+        self.bg_a_slider.valueChanged.connect(self.update_bg_a_label)
+
+        self.color_pre=QLabel('颜色预览：')
+        self.color_rect=QLabel()
+        self.color_rect.setFixedSize(50,50)
+        self.color_rect.setStyleSheet(f'background-color: {self.color.name()}')
+        color_pre_layout=QHBoxLayout()
+        color_pre_layout.addStretch(1)
+        color_pre_layout.addWidget(self.color_pre)
+        color_pre_layout.addWidget(self.color_rect)
+        color_pre_layout.addStretch(1)
+
+        self.width_label = QLabel('图片长度:', self)
+        self.width_input_line = QLineEdit(self)
+        self.width_input_line.setPlaceholderText('在这里输入整数')
+        self.width_unit_label = QLabel('像素', self)
+        width_input_layout = QHBoxLayout()
+        width_input_layout.addStretch(1)
+        width_input_layout.addWidget(self.width_label)
+        width_input_layout.addWidget(self.width_input_line)
+        width_input_layout.addWidget(self.width_unit_label)
+        width_input_layout.addStretch(1)
+
+        self.height_label = QLabel('图片宽度:', self)
+        self.height_input_line = QLineEdit(self)
+        self.height_input_line.setPlaceholderText('在这里输入整数')
+        self.height_unit_label = QLabel('像素', self)
+        height_input_layout = QHBoxLayout()
+        height_input_layout.addStretch(1)
+        height_input_layout.addWidget(self.height_label)
+        height_input_layout.addWidget(self.height_input_line)
+        height_input_layout.addWidget(self.height_unit_label)
+        height_input_layout.addStretch(1)
+
+        self.create_button = QPushButton('创建图片', self)
+        self.create_button.clicked.connect(self.createImage)
+
+        layout = QVBoxLayout()
+        layout.addLayout(color_layout)
+        layout.addLayout(bg_a_layout)
+        layout.addLayout(color_pre_layout)
+
+        layout.addLayout(width_input_layout)
+        layout.addLayout(height_input_layout)
+
+        layout.addWidget(self.create_button)
+
+        self.setLayout(layout)
+    
+    def update_bg_a_label(self):
+        self.bg_a.setText(f'图片不透明度：{self.bg_a_slider.value()}')
+        self.color.setAlpha(self.bg_a_slider.value())
+        self.color_rect.setStyleSheet(f'background-color: {self.color.name()}')
+
+    def showColorDialog(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.color_label.setText(f'当前颜色:{self.color.getRgb()}')
+            self.color_button.setStyleSheet(f'background-color: {color.name()}')
+            self.color_rect.setStyleSheet(f'background-color: {color.name()}')
+            self.color = color
+
+    def createImage(self):
+        width = int(self.width_input_line.text())
+        height = int(self.height_input_line.text())
+        if width <= 0 or height <= 0:
+            return
+        if not hasattr(self, 'color'):
+            return
+        image = QPixmap(width, height)
+        image.fill(self.color)
+        image.save(f'./bgs/{self.color.name()}-{width}x{height}.png')
+        # print(f'图片已创建: {self.color.name()}-{width}x{height}.png')
 
 class HandFontWindow(QMainWindow):
     def __init__(self):
@@ -55,6 +173,15 @@ class HandFontWindow(QMainWindow):
         self.bg_path='./bgs/letter.png'
         config_layout.addWidget(self.label_bg)
         config_layout.addWidget(self.button_bg)
+
+        creat_bg_layout=QHBoxLayout()
+        creat_bg_label=QLabel('没有喜欢的背景图片？')
+        creat_bg_button=QPushButton('创建一个纯色背景')
+        creat_bg_button.clicked.connect(self.create_bg_widget)
+        creat_bg_layout.addWidget(creat_bg_label)
+        creat_bg_layout.addWidget(creat_bg_button)
+        config_layout.addLayout(creat_bg_layout)
+
         # 选择字体
         self.label_font = QLabel("选择字体：")
         self.combo_box = QComboBox(self)
@@ -174,6 +301,10 @@ class HandFontWindow(QMainWindow):
         config_widget.setLayout(config_layout)
 
         return config_widget
+    
+    def create_bg_widget(self):
+        self.dialog=ImageCreator()
+        self.dialog.show()
     
     def show_file_dialog(self):
         # 创建文件选择框
