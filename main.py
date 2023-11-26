@@ -1,6 +1,6 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene,QWidget,QHBoxLayout,QVBoxLayout,QLabel,
-                             QGraphicsPixmapItem, QGraphicsRectItem, QMainWindow,
+                             QGraphicsPixmapItem, QGraphicsRectItem, QMainWindow,QMessageBox,
                              QGraphicsTextItem, QPushButton,QInputDialog,QComboBox,
                              QSlider,QVBoxLayout,QFileDialog,QColorDialog,QTextEdit,QDialog,QLineEdit)
 from PyQt6.QtCore import Qt, QRectF
@@ -122,6 +122,8 @@ class ImageCreator(QDialog):
         image = QPixmap(width, height)
         image.fill(self.color)
         image.save(f'./bgs/{self.color.name()}-{width}x{height}.png')
+        QMessageBox.information(self, '提示', '图片已保存在 bgs 目录下！', QMessageBox.StandardButton.Ok)
+        
         # print(f'图片已创建: {self.color.name()}-{width}x{height}.png')
 
 class HandFontWindow(QMainWindow):

@@ -28,7 +28,7 @@
 
 就是项目中的rar文件，解压即可使用。
 
-下载链接：[]
+下载链接：[https://github.com/w-x-x-w/HandwritingGenerator/releases](https://github.com/w-x-x-w/HandwritingGenerator/releases)
 
 ### 下载源代码：
 
