@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene,QWidget
                              QGraphicsTextItem, QPushButton,QInputDialog,QFontComboBox,QComboBox,
                              QSlider,QVBoxLayout,QFileDialog,QColorDialog,QTextEdit)
 from PyQt6.QtCore import Qt, QRectF, Qt
-from PyQt6.QtGui import QPixmap, QPainter, QImage, QFont, QKeySequence,QShortcut,QFont, QFontDatabase,QColor
+from PyQt6.QtGui import QPixmap, QPainter, QImage, QFont, QKeySequence,QShortcut,QFont, QFontDatabase,QColor,QIcon
 
 class HandFontWindow(QMainWindow):
     def __init__(self):
@@ -15,6 +15,7 @@ class HandFontWindow(QMainWindow):
     def initUI(self):
         self.setGeometry(100, 100, 1200, 600)
         self.setWindowTitle('手写字体图片生成器')
+        self.setWindowIcon(QIcon('logo.png'))
 
         self.initView()
         self.config_widget=self.initConfigForm()
@@ -216,7 +217,6 @@ class HandFontWindow(QMainWindow):
         self.label_height.setText(f"文字显示高度：{self.slider_height.value()}")
 
         text_tmp=self.text_edit.toPlainText().replace(' ','&nbsp;').replace('\n','<br>')
-        print(text_tmp)
 
         self.view.addTextItem(text=text_tmp, 
                         bg_path=self.bg_path,
