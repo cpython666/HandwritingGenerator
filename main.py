@@ -240,20 +240,20 @@ class HandFontWindow(QMainWindow):
 
         # 文字区域宽度
         self.slider_width = QSlider(Qt.Orientation.Horizontal)
-        self.slider_width.setRange(200, 2000)
+        self.slider_width.setRange(10, 2000)
         self.slider_width.setSingleStep(1)
-        self.slider_width.setValue(500)
+        self.slider_width.setValue(100)
         self.slider_width.valueChanged.connect(self.updateView)
-        self.label_width = QLabel("文字显示宽度：500")
+        self.label_width = QLabel("文字显示宽度：100")
         config_layout.addWidget(self.label_width)
         config_layout.addWidget(self.slider_width)        
         
         self.slider_height = QSlider(Qt.Orientation.Horizontal)
-        self.slider_height.setRange(500, 2000)
+        self.slider_height.setRange(1, 2000)
         self.slider_height.setSingleStep(1)
-        self.slider_height.setValue(500)
+        self.slider_height.setValue(200)
         self.slider_height.valueChanged.connect(self.updateView)
-        self.label_height = QLabel("文字显示高度：500")
+        self.label_height = QLabel("文字显示高度：200")
         config_layout.addWidget(self.label_height)
         config_layout.addWidget(self.slider_height)
 
@@ -515,26 +515,62 @@ class GraphicsView(QGraphicsView):
         text_item.setTextWidth(rect_width)
         # 将文本项添加到场景中
         self.scene().addItem(text_item)
-
+    
     def exportSceneToImage(self):
         # 获取场景的范围
         scene_rect = self.sceneRect()
-         # 弹出输入对话框获取用户输入的文件名，默认为"img_1.png"
+
+        # 获取场景内容的大小
+        content_rect = self.scene().itemsBoundingRect()
+
+        # 使用场景内容的大小来确定导出图片的大小
+        image_size = content_rect.size().toSize()
+
+        # 弹出输入对话框获取用户输入的文件名，默认为"img_1.png"
         file_name, _ = QInputDialog.getText(self, '导出图片', '输入文件名', text='img_1.png')
+        
         # 如果用户取消了输入，则返回
         if not file_name:
             return
+
         # 创建一个QImage对象
-        image = QImage(scene_rect.size().toSize(), QImage.Format.Format_ARGB32)
+        image = QImage(image_size, QImage.Format.Format_ARGB32)
         image.fill(Qt.GlobalColor.white)
+
         # 创建一个QPainter对象
         painter = QPainter(image)
-        # 将场景渲染到QImage中
-        self.scene().render(painter, QRectF(image.rect()), scene_rect)
+
+        # 将场景渲染到QImage中，以内容的大小为主
+        self.scene().render(painter, QRectF(image.rect()), content_rect)
+
         # 结束绘制
         painter.end()
+
         # 保存QImage为图片文件
         image.save(file_name)
+        QMessageBox.information(self, '提示', '图片已保存在当前目录下！', QMessageBox.StandardButton.Ok)
+
+    # def exportSceneToImage(self):
+    #     # 获取场景的范围
+    #     scene_rect = self.sceneRect()
+    #      # 弹出输入对话框获取用户输入的文件名，默认为"img_1.png"
+    #     file_name, _ = QInputDialog.getText(self, '导出图片', '输入文件名', text='img_1.png')
+    #     # 如果用户取消了输入，则返回
+    #     if not file_name:
+    #         return
+    #     # 创建一个QImage对象
+    #     image = QImage(scene_rect.size().toSize(), QImage.Format.Format_ARGB32)
+    #     image.fill(Qt.GlobalColor.white)
+    #     # 创建一个QPainter对象
+    #     painter = QPainter(image)
+    #     # 将场景渲染到QImage中
+    #     self.scene().render(painter, QRectF(image.rect()), scene_rect)
+    #     # 结束绘制
+    #     painter.end()
+    #     # 保存QImage为图片文件
+    #     image.save(file_name)
+    #     QMessageBox.information(self, '提示', '图片已保存在当前目录下！', QMessageBox.StandardButton.Ok)
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
