@@ -519,33 +519,24 @@ class GraphicsView(QGraphicsView):
     def exportSceneToImage(self):
         # 获取场景的范围
         scene_rect = self.sceneRect()
-
         # 获取场景内容的大小
         content_rect = self.scene().itemsBoundingRect()
-
         # 使用场景内容的大小来确定导出图片的大小
         image_size = content_rect.size().toSize()
-
         # 弹出输入对话框获取用户输入的文件名，默认为"img_1.png"
         file_name, _ = QInputDialog.getText(self, '导出图片', '输入文件名', text='img_1.png')
-        
         # 如果用户取消了输入，则返回
         if not file_name:
             return
-
-        # 创建一个QImage对象
-        image = QImage(image_size, QImage.Format.Format_ARGB32)
-        image.fill(Qt.GlobalColor.white)
-
+        # 创建一个 QImage 对象，使用 ARGB32_Premultiplied 格式，支持透明度
+        image = QImage(image_size, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)  # 使用透明背景
         # 创建一个QPainter对象
         painter = QPainter(image)
-
         # 将场景渲染到QImage中，以内容的大小为主
         self.scene().render(painter, QRectF(image.rect()), content_rect)
-
         # 结束绘制
         painter.end()
-
         # 保存QImage为图片文件
         image.save(file_name)
         QMessageBox.information(self, '提示', '图片已保存在当前目录下！', QMessageBox.StandardButton.Ok)
