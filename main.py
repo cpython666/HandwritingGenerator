@@ -157,8 +157,8 @@ class HandFontWindow(QMainWindow):
         self.show()
     
     def initView(self):
-        self.scene = QGraphicsScene(self)
-        self.view = GraphicsView(self.scene, self)
+        self.my_scene = QGraphicsScene(self)
+        self.view = GraphicsView(self.my_scene, self)
         self.setCentralWidget(self.view)
 
     def initConfigForm(self):
@@ -499,6 +499,7 @@ class GraphicsView(QGraphicsView):
         pixmap = QPixmap(bg_path)
         item = QGraphicsPixmapItem(pixmap)
         self.scene().addItem(item)
+        self.scene().setSceneRect(0, 0, 5000, 5000)
         # 创建一个QGraphicsTextItem
         text_item = QGraphicsTextItem()
         text_item.setPos(x, y)
