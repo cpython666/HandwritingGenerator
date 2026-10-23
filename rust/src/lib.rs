@@ -4,3 +4,6 @@ pub mod rendering;
 
 #[cfg(feature = "gui")]
 pub mod gui;
+
+#[cfg(feature = "gui")]
+pub mod clipboard;

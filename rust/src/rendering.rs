@@ -6,12 +6,13 @@ use std::{
     fs,
     io::{Cursor, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     time::SystemTime,
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use fontdue::{Font, FontSettings, Metrics};
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Rgba, RgbaImage};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Pixel, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -138,12 +139,62 @@ struct LoadedFont {
     key: AssetKey,
     bytes: Vec<u8>,
     font: Font,
+    bitmap_size: u32,
+    bitmaps: BitmapCache,
+}
+
+/// Native-size layers. The preview translates the text texture on the GPU;
+/// exports compose these same pixels at the requested integer position.
+#[derive(Clone)]
+pub struct RenderLayers {
+    pub background: Arc<RgbaImage>,
+    pub text: Arc<RgbaImage>,
+}
+
+impl RenderLayers {
+    pub fn composite(&self, x: u32, y: u32) -> RgbaImage {
+        let mut image = self.background.as_ref().clone();
+        let width = self.text.width().min(image.width().saturating_sub(x)) as usize;
+        let height = self.text.height().min(image.height().saturating_sub(y)) as usize;
+        if width == 0 || height == 0 {
+            return image;
+        }
+        let stride = image.width() as usize * 4;
+        // Text layers are mostly transparent. Skip those pixels rather than
+        // rewriting the entire paper through the generic image overlay loop.
+        for (row, source) in self
+            .text
+            .as_raw()
+            .chunks_exact(self.text.width() as usize * 4)
+            .take(height)
+            .enumerate()
+        {
+            let offset = (y as usize + row) * stride + x as usize * 4;
+            let destination = &mut image.as_mut()[offset..offset + width * 4];
+            for (source, destination) in source[..width * 4]
+                .chunks_exact(4)
+                .zip(destination.chunks_exact_mut(4))
+            {
+                if source[3] != 0 {
+                    Rgba::from_slice_mut(destination).blend(Rgba::from_slice(source));
+                }
+            }
+        }
+        image
+    }
+}
+
+struct CachedText {
+    config: RenderConfig,
+    dimensions: (u32, u32),
+    image: Arc<RgbaImage>,
 }
 
 #[derive(Default)]
 pub struct Renderer {
     font: Option<LoadedFont>,
-    background: Option<(AssetKey, RgbaImage)>,
+    background: Option<(AssetKey, Arc<RgbaImage>)>,
+    text: Option<CachedText>,
 }
 
 fn validate_dimensions(width: u32, height: u32) -> Result<()> {
@@ -192,6 +243,10 @@ fn load_background(path: &str) -> Result<RgbaImage> {
 
 impl Renderer {
     pub fn render(&mut self, config: &RenderConfig) -> Result<RgbaImage> {
+        Ok(self.render_layers(config)?.composite(config.x, config.y))
+    }
+
+    pub fn render_layers(&mut self, config: &RenderConfig) -> Result<RenderLayers> {
         config.validate()?;
         let bg_key = asset_key(&config.bg_path)?;
         if self
@@ -199,11 +254,35 @@ impl Renderer {
             .as_ref()
             .is_none_or(|(key, _)| *key != bg_key)
         {
-            self.background = Some((bg_key, load_background(&config.bg_path)?));
+            self.background = Some((bg_key, Arc::new(load_background(&config.bg_path)?)));
         }
-        let mut image = self.background.as_ref().unwrap().1.clone();
+        let background = Arc::clone(&self.background.as_ref().unwrap().1);
+        let dimensions = (
+            config.rect_width.min(background.width()),
+            config.rect_height.min(background.height()),
+        );
+        // Position and paper identity do not change local text pixels. Width is
+        // retained for wrapping even when the visible layer is clipped smaller.
+        let mut local = config.clone();
+        local.x = 0;
+        local.y = 0;
+        local.bg_path.clear();
         if config.text.is_empty() {
-            return Ok(image);
+            if self
+                .text
+                .as_ref()
+                .is_none_or(|cached| cached.config != local)
+            {
+                self.text = Some(CachedText {
+                    config: local,
+                    dimensions,
+                    image: Arc::new(RgbaImage::new(1, 1)),
+                });
+            }
+            return Ok(RenderLayers {
+                background,
+                text: Arc::clone(&self.text.as_ref().unwrap().image),
+            });
         }
         let font_key = asset_key(&config.font_path)?;
         if self.font.as_ref().is_none_or(|font| font.key != font_key) {
@@ -215,9 +294,25 @@ impl Renderer {
                 key: font_key,
                 bytes,
                 font,
+                bitmap_size: config.font_size,
+                bitmaps: HashMap::new(),
             });
+            self.text = None;
         }
-        let loaded = self.font.as_ref().unwrap();
+        if let Some(cached) = &self.text {
+            if cached.config == local && cached.dimensions == dimensions {
+                return Ok(RenderLayers {
+                    background,
+                    text: Arc::clone(&cached.image),
+                });
+            }
+        }
+        let loaded = self.font.as_mut().unwrap();
+        if loaded.bitmap_size != config.font_size {
+            loaded.bitmaps.clear();
+            loaded.bitmap_size = config.font_size;
+        }
+        let mut image = RgbaImage::new(dimensions.0, dimensions.1);
         let face = rustybuzz::Face::from_slice(&loaded.bytes, 0).context("无法读取字体轮廓")?;
         let px = config.font_size as f32 * 96.0 / 72.0;
         let metrics = loaded
@@ -226,18 +321,15 @@ impl Renderer {
             .context("字体缺少横排度量")?;
         let line_height = metrics.new_line_size * config.line_spacing;
         let color = parse_color(&config.font_color)?;
-        let mut baseline = config.y as f32 + metrics.ascent;
-        let bottom = config
-            .y
-            .saturating_add(config.rect_height)
-            .min(image.height());
-        let mut bitmaps = HashMap::new();
+        let mut baseline = metrics.ascent;
+        let bottom = image.height();
+        let mut ink_extent = (1, 1);
         let text = config
             .text
             .replace("\r\n", "\n")
             .replace(['\r', '\u{2028}', '\u{2029}'], "\n")
             .replace('\t', "    ");
-        for paragraph in text.split('\n') {
+        'paragraphs: for paragraph in text.split('\n') {
             for line in wrap_lines(
                 paragraph,
                 &face,
@@ -246,7 +338,7 @@ impl Renderer {
                 config.rect_width as f32,
             ) {
                 if baseline - metrics.ascent >= bottom as f32 {
-                    return Ok(image);
+                    break 'paragraphs;
                 }
                 draw_line(
                     &mut image,
@@ -254,14 +346,37 @@ impl Renderer {
                     &face,
                     &line,
                     baseline,
-                    config,
+                    &local,
                     color,
-                    &mut bitmaps,
+                    &mut loaded.bitmaps,
+                    &mut ink_extent,
                 );
                 baseline += line_height;
             }
         }
-        Ok(image)
+        // Preserve the local origin, but avoid uploading/compositing unused
+        // trailing paper-sized transparent margins for a short note.
+        if ink_extent != image.dimensions() {
+            let stride = image.width() as usize * 4;
+            let cropped_stride = ink_extent.0 as usize * 4;
+            let mut pixels = image.into_raw();
+            for row in 1..ink_extent.1 as usize {
+                pixels.copy_within(
+                    row * stride..row * stride + cropped_stride,
+                    row * cropped_stride,
+                );
+            }
+            pixels.truncate(cropped_stride * ink_extent.1 as usize);
+            pixels.shrink_to_fit();
+            image = RgbaImage::from_raw(ink_extent.0, ink_extent.1, pixels).unwrap();
+        }
+        let text = Arc::new(image);
+        self.text = Some(CachedText {
+            config: local,
+            dimensions,
+            image: Arc::clone(&text),
+        });
+        Ok(RenderLayers { background, text })
     }
 }
 
@@ -350,6 +465,7 @@ fn draw_line(
     config: &RenderConfig,
     color: [u8; 4],
     cache: &mut BitmapCache,
+    ink_extent: &mut (u32, u32),
 ) {
     let px = config.font_size as f32 * 96.0 / 72.0;
     let scale = px / face.units_per_em() as f32;
@@ -384,7 +500,7 @@ fn draw_line(
             }
             for column in 0..metrics.width {
                 let coverage = bitmap[row * metrics.width + column];
-                if coverage == 0 {
+                if coverage == 0 || color[3] == 0 {
                     continue;
                 }
                 for shift in 0..=bold {
@@ -395,6 +511,8 @@ fn draw_line(
                         continue;
                     }
                     blend(image.get_pixel_mut(x as u32, y as u32), color, coverage);
+                    ink_extent.0 = ink_extent.0.max(x as u32 + 1);
+                    ink_extent.1 = ink_extent.1.max(y as u32 + 1);
                 }
             }
         }
@@ -675,5 +793,86 @@ mod tests {
         config.font_spacing = 0.1;
         config.font_weight = 900;
         assert_ne!(original, renderer.render(&config).unwrap());
+    }
+
+    #[test]
+    fn translating_layers_reuses_pixels_and_matches_export() {
+        let mut renderer = Renderer::default();
+        let mut config = sample();
+        let first = renderer.render_layers(&config).unwrap();
+        config.x += 19;
+        config.y += 13;
+        let moved = renderer.render_layers(&config).unwrap();
+        assert!(Arc::ptr_eq(&first.background, &moved.background));
+        assert!(Arc::ptr_eq(&first.text, &moved.text));
+        assert_eq!(
+            moved.composite(config.x, config.y),
+            renderer.render(&config).unwrap()
+        );
+        let mut reference = moved.background.as_ref().clone();
+        image::imageops::overlay(
+            &mut reference,
+            moved.text.as_ref(),
+            i64::from(config.x),
+            i64::from(config.y),
+        );
+        assert_eq!(moved.composite(config.x, config.y), reference);
+        let exported = renderer.render(&config).unwrap();
+        for (x, y, pixel) in exported.enumerate_pixels() {
+            if *pixel != Rgba([255; 4]) {
+                assert!((config.x..config.x + config.rect_width).contains(&x));
+                assert!((config.y..config.y + config.rect_height).contains(&y));
+            }
+        }
+        config.x = 8192;
+        assert!(
+            renderer
+                .render(&config)
+                .unwrap()
+                .pixels()
+                .all(|p| *p == Rgba([255; 4]))
+        );
+    }
+
+    #[test]
+    fn text_cache_tracks_style_and_dimensions_but_not_paper_color() {
+        let mut renderer = Renderer::default();
+        let mut config = sample();
+        let first = renderer.render_layers(&config).unwrap();
+        config.bg_path = "solid:#102030:360:240".into();
+        let recolored_paper = renderer.render_layers(&config).unwrap();
+        assert!(!Arc::ptr_eq(&first.background, &recolored_paper.background));
+        assert!(Arc::ptr_eq(&first.text, &recolored_paper.text));
+        config.font_color = "#80336699".into();
+        let ink = renderer.render_layers(&config).unwrap();
+        assert!(!Arc::ptr_eq(&first.text, &ink.text));
+        assert_ne!(first.text, ink.text);
+        let mut reference = ink.background.as_ref().clone();
+        image::imageops::overlay(&mut reference, ink.text.as_ref(), 330, 220);
+        assert_eq!(ink.composite(330, 220), reference);
+        config.font_size = 200;
+        assert_eq!(
+            renderer.render(&config).unwrap(),
+            render_image(&config).unwrap()
+        );
+        config.font_size = 24;
+        assert_eq!(
+            renderer.render(&config).unwrap(),
+            render_image(&config).unwrap()
+        );
+        config.font_color = "transparent".into();
+        let invisible = renderer.render_layers(&config).unwrap();
+        assert_eq!(invisible.text.dimensions(), (1, 1));
+        assert_eq!(invisible.composite(0, 0), *invisible.background);
+        config.bg_path = "solid:transparent:16:20".into();
+        config.font_color = "#80336699".into();
+        config.font_size = 200;
+        config.rect_width = 8192;
+        config.rect_height = 8192;
+        config.x = 0;
+        config.y = 0;
+        let small = renderer.render_layers(&config).unwrap();
+        assert!(small.text.width() <= 16 && small.text.height() <= 20);
+        assert_eq!(small.composite(0, 0).dimensions(), (16, 20));
     }
 }

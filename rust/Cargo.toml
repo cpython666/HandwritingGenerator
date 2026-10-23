@@ -8,11 +8,12 @@ license = "MIT"
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe", "dep:rfd"]
+gui = ["dep:eframe", "dep:rfd", "dep:arboard"]
 screenshot = ["gui", "eframe/__screenshot"]
 
 [dependencies]
 anyhow = "1"
+arboard = { version = "=3.7.0", optional = true }
 brotli-decompressor = "5"
 clap = { version = "4", features = ["derive"] }
 csscolorparser = "0.7"

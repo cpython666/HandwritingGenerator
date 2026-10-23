@@ -5,7 +5,10 @@ use image::RgbaImage;
 use rendering::RenderConfig;
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender},
+    },
     time::{Duration, Instant},
 };
 
@@ -15,14 +18,118 @@ const SAMPLE: &str =
     "把一颗星，藏进字里行间。\n\n愿每一句未曾说出口的话，\n都能在纸上，找到温柔的回响。";
 
 enum WorkerResult {
-    Preview(u64, Result<RgbaImage, String>),
+    Preview(u64, Result<(PreviewLayer, PreviewLayer), String>),
     Export(Result<PathBuf, String>),
+    CopyImage(Result<RgbaImage, String>),
+}
+
+#[derive(Clone)]
+struct PreviewLayer {
+    pixels: Arc<egui::ColorImage>,
+    size: Vec2,
+}
+
+struct LayerTexture {
+    layer: PreviewLayer,
+    texture: egui::TextureHandle,
+}
+
+#[derive(Clone, Copy)]
+struct TextDrag {
+    pointer: egui::Pos2,
+    origin: [u32; 2],
+    zoom: f32,
+}
+
+impl TextDrag {
+    fn position(self, pointer: egui::Pos2) -> [u32; 2] {
+        let delta = (pointer - self.pointer) / self.zoom;
+        [
+            (self.origin[0] as f32 + delta.x).round().clamp(0.0, 8192.0) as u32,
+            (self.origin[1] as f32 + delta.y).round().clamp(0.0, 8192.0) as u32,
+        ]
+    }
+}
+
+fn prepare_layer(
+    image: Arc<RgbaImage>,
+    cache: &mut Option<(Arc<RgbaImage>, PreviewLayer)>,
+) -> PreviewLayer {
+    if let Some((previous, layer)) = cache {
+        if Arc::ptr_eq(previous, &image) {
+            return layer.clone();
+        }
+    }
+    // Upload display-sized textures; copying/exporting always uses native pixels.
+    let size = Vec2::new(image.width() as f32, image.height() as f32);
+    let scale = (2048.0 / size.max_elem()).min(1.0);
+    let resized;
+    let pixels = if scale < 1.0 {
+        resized = image::imageops::resize(
+            &*image,
+            (size.x * scale).round().max(1.0) as u32,
+            (size.y * scale).round().max(1.0) as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        &resized
+    } else {
+        &*image
+    };
+    let layer = PreviewLayer {
+        pixels: Arc::new(egui::ColorImage::from_rgba_unmultiplied(
+            [pixels.width() as usize, pixels.height() as usize],
+            pixels.as_raw(),
+        )),
+        size,
+    };
+    *cache = Some((image, layer.clone()));
+    layer
+}
+
+fn update_texture(
+    ctx: &egui::Context,
+    target: &mut Option<LayerTexture>,
+    name: &str,
+    layer: PreviewLayer,
+) {
+    if let Some(target) = target {
+        if !Arc::ptr_eq(&target.layer.pixels, &layer.pixels) {
+            target.texture.set(
+                egui::ImageData::Color(layer.pixels.clone()),
+                egui::TextureOptions::LINEAR,
+            );
+        }
+        target.layer = layer;
+    } else {
+        *target = Some(LayerTexture {
+            texture: ctx.load_texture(
+                name,
+                egui::ImageData::Color(layer.pixels.clone()),
+                egui::TextureOptions::LINEAR,
+            ),
+            layer,
+        });
+    }
+}
+
+fn same_layout(a: &RenderConfig, b: &RenderConfig) -> bool {
+    a.text == b.text
+        && a.bg_path == b.bg_path
+        && a.font_path == b.font_path
+        && a.font_size == b.font_size
+        && a.font_color == b.font_color
+        && a.font_weight == b.font_weight
+        && a.font_spacing == b.font_spacing
+        && a.line_spacing == b.line_spacing
+        && a.rect_width == b.rect_width
+        && a.rect_height == b.rect_height
 }
 
 enum Action {
     OpenPreset,
     SavePreset,
     Export,
+    CopyImage,
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -52,17 +159,21 @@ pub fn run() -> anyhow::Result<()> {
 
 struct Editor {
     config: RenderConfig,
+    observed_config: RenderConfig,
     fonts: Vec<String>,
     backgrounds: Vec<String>,
     tab: usize,
     revision: u64,
     submitted: u64,
     rendered: u64,
-    edited_at: Instant,
+    last_submitted: Instant,
     requests: Sender<(u64, RenderConfig)>,
     results: Receiver<WorkerResult>,
     result_sender: Sender<WorkerResult>,
-    texture: Option<egui::TextureHandle>,
+    background_texture: Option<LayerTexture>,
+    text_texture: Option<LayerTexture>,
+    text_drag: Option<TextDrag>,
+    pan_drag: bool,
     image_size: Vec2,
     fit: bool,
     zoom: f32,
@@ -73,6 +184,8 @@ struct Editor {
     status: String,
     error: bool,
     export_busy: bool,
+    copy_busy: bool,
+    clipboard: crate::clipboard::ImageClipboard,
     paper_color: [u8; 3],
     paper_alpha: u8,
     paper_width: u32,
@@ -93,12 +206,22 @@ impl Editor {
         let ctx = cc.egui_ctx.clone();
         std::thread::spawn(move || {
             let mut renderer = rendering::Renderer::default();
+            let mut background = None;
+            let mut text = None;
             while let Ok(mut request) = request_rx.recv() {
                 // Keep only the newest pending edit; the running render is bounded by core limits.
                 while let Ok(newer) = request_rx.try_recv() {
                     request = newer;
                 }
-                let result = renderer.render(&request.1).map_err(|e| e.to_string());
+                let result = renderer
+                    .render_layers(&request.1)
+                    .map(|layers| {
+                        (
+                            prepare_layer(layers.background, &mut background),
+                            prepare_layer(layers.text, &mut text),
+                        )
+                    })
+                    .map_err(|e| e.to_string());
                 if worker_tx
                     .send(WorkerResult::Preview(request.0, result))
                     .is_err()
@@ -124,6 +247,7 @@ impl Editor {
             ..Default::default()
         };
         let mut editor = Self {
+            observed_config: config.clone(),
             config,
             fonts: items("fonts"),
             backgrounds: items("backgrounds"),
@@ -135,11 +259,14 @@ impl Editor {
             revision: 1,
             submitted: 0,
             rendered: 0,
-            edited_at: Instant::now(),
+            last_submitted: Instant::now(),
             requests: request_tx,
             results: result_rx,
             result_sender: result_tx,
-            texture: None,
+            background_texture: None,
+            text_texture: None,
+            text_drag: None,
+            pan_drag: false,
             image_size: Vec2::ZERO,
             fit: true,
             zoom: 1.0,
@@ -150,6 +277,8 @@ impl Editor {
             status: "正在准备纸张与笔迹…".into(),
             error: false,
             export_busy: false,
+            copy_busy: false,
+            clipboard: crate::clipboard::ImageClipboard::default(),
             paper_color: [255, 253, 247],
             paper_alpha: 255,
             paper_width: 724,
@@ -181,46 +310,58 @@ impl Editor {
             .is_ok()
         {
             self.submitted = self.revision;
+            self.last_submitted = Instant::now();
         }
     }
 
     fn receive(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.results.try_recv() {
             match result {
-                WorkerResult::Preview(revision, result) if revision == self.revision => {
+                WorkerResult::Preview(revision, result) if revision >= self.rendered => {
                     match result {
-                        Ok(image) => {
-                            if self.image_size
-                                != Vec2::new(image.width() as f32, image.height() as f32)
-                            {
+                        Ok((background, text)) => {
+                            if self.image_size != background.size {
                                 self.measurement = None;
                                 self.measurement_start = None;
+                                self.text_drag = None;
                             }
-                            self.image_size =
-                                Vec2::new(image.width() as f32, image.height() as f32);
-                            let pixels = egui::ColorImage::from_rgba_unmultiplied(
-                                [image.width() as usize, image.height() as usize],
-                                image.as_raw(),
-                            );
-                            self.texture = Some(ctx.load_texture(
-                                "handwriting-preview",
-                                pixels,
-                                egui::TextureOptions::LINEAR,
-                            ));
+                            self.image_size = background.size;
+                            update_texture(ctx, &mut self.background_texture, "paper", background);
+                            update_texture(ctx, &mut self.text_texture, "handwriting", text);
                             self.rendered = revision;
-                            self.status = "已更新预览 · 超出文字区域的内容会裁切".into();
+                            self.status = if revision == self.revision {
+                                "已更新预览 · 拖动文字可调整位置"
+                            } else {
+                                "正在更新预览…"
+                            }
+                            .into();
                             self.error = false;
                         }
-                        Err(error) => {
+                        Err(error) if revision == self.revision => {
                             self.status = format!("{error}；当前画布保留上次有效预览");
                             self.error = true;
                         }
+                        Err(_) => {}
                     }
                 }
                 WorkerResult::Preview(..) => {}
                 WorkerResult::Export(result) => {
                     self.export_busy = false;
                     self.report(result.map(|path| format!("已导出：{}", path.display())));
+                }
+                WorkerResult::CopyImage(result) => {
+                    self.copy_busy = false;
+                    let result = result.and_then(|image| {
+                        self.clipboard
+                            .copy_image(&image)
+                            .map_err(|e| e.to_string())?;
+                        Ok(format!(
+                            "已复制图片 · {} × {} px，可直接粘贴",
+                            image.width(),
+                            image.height()
+                        ))
+                    });
+                    self.report(result);
                 }
             }
         }
@@ -261,6 +402,8 @@ impl Editor {
             match rendering::load_preset(&path) {
                 Ok(config) => {
                     self.config = config;
+                    self.text_drag = None;
+                    self.pan_drag = false;
                     self.fit = true;
                     self.pan = Vec2::ZERO;
                     self.report(Ok(format!("已打开：{}", path.display())));
@@ -319,6 +462,9 @@ impl Editor {
             shift: true,
             ..command
         };
+        if ctx.input_mut(|i| i.consume_key(shift_command, egui::Key::C)) {
+            self.action = Some(Action::CopyImage);
+        }
         if ctx.input_mut(|i| i.consume_key(shift_command, egui::Key::S)) {
             self.action = Some(Action::SavePreset);
         } else if ctx.input_mut(|i| i.consume_key(command, egui::Key::S)) {
@@ -330,6 +476,23 @@ impl Editor {
         if ctx.input_mut(|i| i.consume_key(command, egui::Key::W)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    fn copy_image(&mut self, ctx: &egui::Context) {
+        if self.copy_busy {
+            return;
+        }
+        let config = self.config.clone();
+        let tx = self.result_sender.clone();
+        let ctx = ctx.clone();
+        self.copy_busy = true;
+        self.status = "正在准备原尺寸图片…".into();
+        self.error = false;
+        std::thread::spawn(move || {
+            let result = rendering::render_image(&config).map_err(|e| e.to_string());
+            let _ = tx.send(WorkerResult::CopyImage(result));
+            ctx.request_repaint();
+        });
     }
 
     fn header(&mut self, ctx: &egui::Context) {
@@ -368,6 +531,21 @@ impl Editor {
                             .clicked()
                         {
                             self.action = Some(Action::Export);
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.copy_busy,
+                                egui::Button::new(if self.copy_busy {
+                                    "正在复制…"
+                                } else {
+                                    "复制为图片"
+                                })
+                                .min_size(Vec2::new(104.0, 36.0)),
+                            )
+                            .on_hover_text("Ctrl / ⌘ + Shift + C · 复制原尺寸图片")
+                            .clicked()
+                        {
+                            self.action = Some(Action::CopyImage);
                         }
                         if ui
                             .add_sized([94.0, 36.0], egui::Button::new("保存预设"))
@@ -488,6 +666,11 @@ impl Editor {
         typography_controls(ui, &mut self.config);
         ui.add_space(20.0);
         label(ui, "文字的位置与范围");
+        ui.label(
+            RichText::new("可直接拖动画布中的文字；单击数值可输入。")
+                .small()
+                .color(MUTED),
+        );
         egui::Grid::new("region")
             .num_columns(2)
             .spacing([16.0, 14.0])
@@ -642,10 +825,15 @@ impl Editor {
                         }
                     });
                 });
+                ui.label(
+                    RichText::new("拖动文字定位 · 空格＋拖动 / 中键移动纸张")
+                        .small()
+                        .color(MUTED),
+                );
                 ui.add_space(8.0);
                 let (canvas, response) = ui.allocate_exact_size(
                     ui.available_size().max(Vec2::splat(1.0)),
-                    egui::Sense::drag(),
+                    egui::Sense::click_and_drag(),
                 );
                 let painter = ui.painter_at(canvas);
                 if self.fit && self.image_size.x > 0.0 {
@@ -654,11 +842,7 @@ impl Editor {
                         .clamp(0.01, 2.0);
                     self.pan = Vec2::ZERO;
                 }
-                if response.dragged_by(egui::PointerButton::Primary) {
-                    self.fit = false;
-                    self.pan += response.drag_delta();
-                }
-                if response.hovered() {
+                if response.hovered() && self.text_drag.is_none() {
                     let (scroll, zoom_delta, command) =
                         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers.command));
                     if (zoom_delta - 1.0).abs() > 0.001 || (command && scroll.y != 0.0) {
@@ -679,11 +863,68 @@ impl Editor {
                         self.pan += scroll;
                     }
                 }
-                if let Some(texture) = &self.texture {
-                    let rect = egui::Rect::from_center_size(
+                if let Some(texture) = &self.background_texture {
+                    let mut rect = egui::Rect::from_center_size(
                         canvas.center() + self.pan,
                         self.image_size * self.zoom,
                     );
+                    let region = egui::Rect::from_min_size(
+                        rect.min
+                            + egui::vec2(self.config.x as f32, self.config.y as f32) * self.zoom,
+                        egui::vec2(
+                            self.config.rect_width as f32,
+                            self.config.rect_height as f32,
+                        ) * self.zoom,
+                    )
+                    .intersect(rect)
+                    .intersect(canvas);
+                    let space = ui.input(|i| i.key_down(egui::Key::Space));
+                    // Capture on press: a quick move + release may arrive in one frame,
+                    // before click_and_drag ever emits drag_started.
+                    if response.is_pointer_button_down_on()
+                        && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+                    {
+                        if let Some(start) = ui.input(|i| i.pointer.press_origin()) {
+                            self.pan_drag = space || !region.contains(start);
+                            self.text_drag = (!self.pan_drag).then_some(TextDrag {
+                                pointer: start,
+                                origin: [self.config.x, self.config.y],
+                                zoom: self.zoom,
+                            });
+                        }
+                    }
+                    if let Some(drag) = self.text_drag {
+                        if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
+                            [self.config.x, self.config.y] = drag.position(pointer);
+                            if !self.error {
+                                self.status =
+                                    format!("文字位置：{}，{} px", self.config.x, self.config.y);
+                            }
+                            ctx.request_repaint();
+                        }
+                    }
+                    if response.dragged_by(egui::PointerButton::Middle)
+                        || (self.pan_drag && response.dragged_by(egui::PointerButton::Primary))
+                    {
+                        self.fit = false;
+                        self.pan += response.drag_delta();
+                        rect = egui::Rect::from_center_size(
+                            canvas.center() + self.pan,
+                            self.image_size * self.zoom,
+                        );
+                    }
+                    let moving_text = self.text_drag.is_some();
+                    if !ui.input(|i| i.pointer.primary_down()) {
+                        self.text_drag = None;
+                        self.pan_drag = false;
+                    }
+                    let hovering_text =
+                        response.hover_pos().is_some_and(|p| region.contains(p)) && !space;
+                    if moving_text {
+                        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                    } else if hovering_text || (response.hovered() && space) {
+                        ctx.set_cursor_icon(egui::CursorIcon::Grab);
+                    }
                     if response.double_clicked() {
                         self.measurement = None;
                         self.measurement_start = None;
@@ -710,18 +951,32 @@ impl Editor {
                     );
                     painter.rect_filled(rect, 0.0, Color32::WHITE);
                     painter.image(
-                        texture.id(),
+                        texture.texture.id(),
                         rect,
                         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                         Color32::WHITE,
                     );
+                    if let Some(text) = &self.text_texture {
+                        let text_rect = egui::Rect::from_min_size(
+                            rect.min
+                                + egui::vec2(self.config.x as f32, self.config.y as f32)
+                                    * self.zoom,
+                            text.layer.size * self.zoom,
+                        );
+                        painter.with_clip_rect(rect.intersect(canvas)).image(
+                            text.texture.id(),
+                            text_rect,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
                     painter.rect_stroke(
                         rect,
                         0.0,
                         egui::Stroke::new(1.0, Color32::from_black_alpha(22)),
                         egui::StrokeKind::Inside,
                     );
-                    if self.show_boundary {
+                    if self.show_boundary || hovering_text || moving_text {
                         let region = egui::Rect::from_min_size(
                             rect.min
                                 + egui::vec2(self.config.x as f32, self.config.y as f32)
@@ -812,7 +1067,6 @@ impl Editor {
 impl eframe::App for Editor {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive(ctx);
-        let before = self.config.clone();
         self.shortcuts(ctx);
         self.header(ctx);
         egui::TopBottomPanel::bottom("status")
@@ -852,18 +1106,24 @@ impl eframe::App for Editor {
             Some(Action::OpenPreset) => self.open_preset(),
             Some(Action::SavePreset) => self.save_preset(),
             Some(Action::Export) => self.export(ctx),
+            Some(Action::CopyImage) => self.copy_image(ctx),
             None => {}
         }
-        if before != self.config {
-            self.revision += 1;
-            self.edited_at = Instant::now();
-            self.error = false;
+        if self.observed_config != self.config {
+            if !same_layout(&self.observed_config, &self.config) {
+                self.revision += 1;
+                self.error = false;
+            } else if !self.error {
+                self.status = format!("文字位置：{}，{} px", self.config.x, self.config.y);
+            }
+            self.observed_config = self.config.clone();
         }
         if self.revision != self.submitted {
-            if self.edited_at.elapsed() >= Duration::from_millis(120) {
+            let interval = Duration::from_millis(33);
+            if self.last_submitted.elapsed() >= interval {
                 self.request_preview();
             } else {
-                ctx.request_repaint_after(Duration::from_millis(120));
+                ctx.request_repaint_after(interval.saturating_sub(self.last_submitted.elapsed()));
             }
         }
         egui::Window::new("关于星笺").open(&mut self.about).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
@@ -1046,6 +1306,44 @@ fn confirmed_path(selected: Option<PathBuf>, extension: &str) -> Option<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dragging_uses_original_position_and_image_scale() {
+        let mut drag = TextDrag {
+            pointer: egui::pos2(200.0, 100.0),
+            origin: [80, 128],
+            zoom: 0.5,
+        };
+        assert_eq!(drag.position(egui::pos2(240.0, 120.0)), [160, 168]);
+        drag.zoom = 2.0;
+        assert_eq!(drag.position(egui::pos2(240.0, 120.0)), [100, 138]);
+        // Each event remains relative to the original pointer, so small movements accumulate.
+        assert_eq!(drag.position(egui::pos2(200.5, 100.0)), [80, 128]);
+        assert_eq!(drag.position(egui::pos2(202.0, 100.0)), [81, 128]);
+        assert_eq!(drag.position(egui::pos2(-1000.0, -1000.0)), [0, 0]);
+    }
+
+    #[test]
+    fn moving_text_does_not_invalidate_the_rendered_layer() {
+        let config = RenderConfig::default();
+        let mut changed = config.clone();
+        changed.x = 200;
+        changed.y = 300;
+        assert!(same_layout(&config, &changed));
+        changed.font_spacing = 0.5;
+        assert!(!same_layout(&config, &changed));
+    }
+
+    #[test]
+    fn preview_preparation_reuses_unchanged_pixels_and_caps_large_uploads() {
+        let image = Arc::new(RgbaImage::new(2500, 10));
+        let mut cache = None;
+        let first = prepare_layer(image.clone(), &mut cache);
+        let second = prepare_layer(image, &mut cache);
+        assert!(Arc::ptr_eq(&first.pixels, &second.pixels));
+        assert_eq!(first.size, Vec2::new(2500.0, 10.0));
+        assert_eq!(first.pixels.width(), 2048);
+    }
 
     #[test]
     fn displaying_controls_does_not_round_a_preset() {

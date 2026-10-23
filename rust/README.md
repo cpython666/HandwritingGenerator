@@ -23,9 +23,13 @@ Windows 构建：`cargo build --manifest-path rust/Cargo.toml --release --locked
 
 ## 桌面
 
-左侧「内容 / 排版 / 纸张」，右侧原尺寸渲染预览。支持输入和导入 UTF-8 文本、选择或导入字体、选择或导入纸张、创建纯色纸、字号/字重/墨色/字距/行距/边距/区域调整、画布缩放拖动、预设和 PNG/JPEG/WebP 导出。Cmd/Ctrl + O 打开预设，Cmd/Ctrl + Shift + S 保存预设，Cmd/Ctrl + S 导出。
+左侧「内容 / 排版 / 纸张」，右侧纸张预览。支持输入和导入 UTF-8 文本、选择或导入字体、选择或导入纸张、创建纯色纸、字号/字重/墨色/字距/行距/边距/区域调整、画布缩放拖动、预设和 PNG/JPEG/WebP 导出。
 
-后台线程合并连续编辑请求；导出使用最新排版，预览边界不进入图片。显示器缩放不改变导出像素。正文按纯文本处理，超出文字矩形裁切，不自动分页。
+直接拖动预览中的文字区域即可定位，「左边距 / 上边距」会同步更新；单击数值可以输入精确位置，也会立即移动预览文字。空格＋拖动、中键拖动或拖动文字区域外的空白可移动纸张，右键拖动用于测量。
+
+「复制为图片」把点击时的完整排版按原尺寸写入系统剪贴板，可直接粘贴到支持图片的应用。Cmd/Ctrl + Shift + C 复制图片，Cmd/Ctrl + S 导出，Cmd/Ctrl + O 打开预设，Cmd/Ctrl + Shift + S 保存预设；普通文字复制仍使用 Cmd/Ctrl + C。
+
+纸张和文字分层缓存，移动文字无需重新排版或上传整张图片。字号、字距等变化每隔至少 33 ms 提交一次后台预览，连续调整时仍显示已完成的结果，不必等松手。预览纹理长边最多 2048 px；复制与导出始终使用完整原始像素，显示器缩放和预览边界不进入成品。正文按纯文本处理，超出文字矩形裁切，不自动分页。
 
 ## CLI 与 MCP
 
@@ -68,6 +72,7 @@ MCP 是本地 stdio 服务，提供 `list_assets` 和 `render_handwriting`，参
 ## 代码入口
 
 - `src/gui.rs`：原生编辑器、异步预览和导出。
+- `src/clipboard.rs`：原尺寸图片复制与原生剪贴板验收。
 - `src/rendering.rs`：共享排版、裁切、图片编码、校验和预设。
 - `src/assets.rs` / `build.rs`：完整字体压缩与嵌入。
 - `src/main.rs` / `src/mcp.rs`：CLI 和 MCP。
@@ -77,6 +82,16 @@ MCP 是本地 stdio 服务，提供 `list_assets` 和 `render_handwriting`，参
 
 ## 本次验收（2026-10-24）
 
-macOS arm64 应用实测 28.42 MiB，ZIP 25.87 MiB，完整字体的嵌入数据约 22.49 MiB。此前 Qt 应用为 116.68 MiB、ZIP 54.03 MiB；应用体积减少约 75.6%。不同平台和编译器的结果会有差异。
+macOS arm64 应用实测约 28.44 MiB，ZIP 25.89 MiB，完整字体的嵌入数据约 22.49 MiB。此前 Qt 应用为 116.68 MiB、ZIP 54.03 MiB；应用体积减少约 75.6%。不同平台和编译器的结果会有差异。
 
-13 项测试、Clippy 与格式检查通过。macOS 原生界面已检查 900×620 和 840×560 小窗口；实际通过文件对话框导入中文、保存预设并导出图片，GUI 与 CLI 生成的 PNG 逐字节相同。另用 MCP 官方 Python SDK 客户端完成了 Rust 服务初始化与真实渲染调用。Windows MSVC 目标通过 `cargo check --all-targets`，尚未在 Windows 实机链接、安装和运行验收。
+19 项自动测试、Clippy 与格式检查通过。macOS 原生窗口已验证直接拖字同步坐标、输入坐标反向移动文字，以及快速拖动的最终位置。另在点击「复制为图片」后执行原生剪贴板验收，尺寸及全部 RGBA 像素与 GUI 导出的 PNG 一致。
+
+macOS 原生界面已检查 900×620 和 840×560 小窗口；实际通过文件对话框导入中文、保存预设并导出图片，GUI 与 CLI 生成的 PNG 逐字节相同。另用 MCP 官方 Python SDK 客户端完成了 Rust 服务初始化与真实渲染调用。Windows MSVC 目标通过 `cargo check --all-targets`，尚未在 Windows 实机链接、安装和运行验收。
+
+剪贴板验收在 GUI 复制后执行（此测试只读取剪贴板）：
+
+```sh
+XINGJIAN_CLIPBOARD_EXPECTED=/absolute/path/export.png cargo test --manifest-path rust/Cargo.toml --locked clipboard::tests::native_clipboard_matches_export -- --ignored
+```
+
+渲染基准：`cargo run --manifest-path rust/Cargo.toml --release --example render_bench -- --layers`。该命令测量 CPU 图层准备，不能直接当作界面帧率。

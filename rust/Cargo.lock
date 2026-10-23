@@ -3924,6 +3924,7 @@ name = "xingjian"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "brotli",
  "brotli-decompressor",
  "clap",

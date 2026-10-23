@@ -7,7 +7,8 @@ app_dir="$package_dir/星笺.app"
 
 cargo build --manifest-path "$project_dir/Cargo.toml" --release --locked
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
-cp "$project_dir/target/release/xingjian" "$app_dir/Contents/MacOS/xingjian"
+cp "$project_dir/target/release/xingjian" "$app_dir/Contents/MacOS/xingjian.next"
+mv -f "$app_dir/Contents/MacOS/xingjian.next" "$app_dir/Contents/MacOS/xingjian"
 cp "$repository_dir/LICENSE" "$app_dir/Contents/Resources/LICENSE"
 cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
