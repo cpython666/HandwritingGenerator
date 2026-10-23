@@ -1,0 +1,48 @@
+name: Rust desktop
+
+on:
+  push:
+    branches: [codex/pure-rust]
+  pull_request:
+    paths: ['rust/**', 'fonts/**', 'bgs/**', '.github/workflows/rust.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      RUSTUP_TOOLCHAIN: '1.88.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+      - name: Format
+        run: cargo +1.88.0 fmt --manifest-path rust/Cargo.toml --check
+      - name: Clippy
+        run: cargo +1.88.0 clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Rendering, resources, CLI and MCP tests
+        run: cargo +1.88.0 test --manifest-path rust/Cargo.toml --locked
+      - name: Release
+        run: cargo +1.88.0 build --manifest-path rust/Cargo.toml --release --locked
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: sh rust/package-macos.sh
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force outputs/rust-build | Out-Null
+          Compress-Archive -Path rust/target/release/xingjian.exe,LICENSE,rust/README.md -DestinationPath outputs/rust-build/Xingjian-Windows-x64.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Xingjian-Rust-${{ runner.os }}-${{ runner.arch }}
+          path: outputs/rust-build/*.zip
+          if-no-files-found: error
