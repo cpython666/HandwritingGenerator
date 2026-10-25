@@ -404,6 +404,14 @@ impl Editor {
         {
             match rendering::load_preset(&path) {
                 Ok(config) => {
+                    if let Ok(Some((rgba, width, height))) =
+                        rendering::parse_solid_paper(&config.bg_path)
+                    {
+                        self.paper_color = [rgba[0], rgba[1], rgba[2]];
+                        self.paper_alpha = rgba[3];
+                        self.paper_width = width;
+                        self.paper_height = height;
+                    }
                     self.config = config;
                     self.text_drag = None;
                     self.pan_drag = false;
@@ -776,12 +784,11 @@ impl Editor {
             );
         });
         if ui.button("使用纯色纸张").clicked() {
-            self.config.bg_path = format!(
-                "solid:{}{:02x}:{}:{}",
-                hex_color(self.paper_color),
+            self.config.bg_path = solid_paper_path(
+                self.paper_color,
                 self.paper_alpha,
                 self.paper_width,
-                self.paper_height
+                self.paper_height,
             );
             self.fit = true;
             self.pan = Vec2::ZERO;
@@ -1286,6 +1293,12 @@ fn hex_color(rgb: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
+fn solid_paper_path(rgb: [u8; 3], alpha: u8, width: u32, height: u32) -> String {
+    let [r, g, b] = rgb;
+    // The shared renderer preserves Qt's #AARRGGBB preset format.
+    format!("solid:#{alpha:02x}{r:02x}{g:02x}{b:02x}:{width}:{height}")
+}
+
 fn confirmed_path(selected: Option<PathBuf>, extension: &str) -> Option<PathBuf> {
     let mut path = selected?;
     if path.extension().is_none() {
@@ -1309,6 +1322,26 @@ fn confirmed_path(selected: Option<PathBuf>, extension: &str) -> Option<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paper_picker_colors_reach_rendered_pixels_without_channel_swaps() {
+        let mut renderer = rendering::Renderer::default();
+        for rgb in [[238, 34, 238], [18, 52, 86], [0, 0, 0], [255, 255, 255]] {
+            for alpha in [0, 1, 128, 255] {
+                let config = RenderConfig {
+                    bg_path: solid_paper_path(rgb, alpha, 9, 7),
+                    ..Default::default()
+                };
+                let rendered = renderer.render(&config).unwrap();
+                assert_eq!(rendered.dimensions(), (9, 7));
+                assert!(
+                    rendered
+                        .pixels()
+                        .all(|p| p.0 == [rgb[0], rgb[1], rgb[2], alpha])
+                );
+            }
+        }
+    }
 
     #[test]
     fn dragging_uses_original_position_and_image_scale() {

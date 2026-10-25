@@ -209,18 +209,24 @@ fn validate_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+/// Unpremultiplied RGBA color, width and height of a generated paper.
+pub type SolidPaper = ([u8; 4], u32, u32);
+
+pub fn parse_solid_paper(path: &str) -> Result<Option<SolidPaper>> {
+    let Some(solid) = path.strip_prefix("solid:") else {
+        return Ok(None);
+    };
+    let parts: Vec<_> = solid.split(':').collect();
+    ensure!(parts.len() == 3, "纯色纸张格式应为 solid:#RRGGBB:宽:高");
+    let width = parts[1].parse::<u32>().context("无效纸张宽度")?;
+    let height = parts[2].parse::<u32>().context("无效纸张高度")?;
+    validate_dimensions(width, height)?;
+    Ok(Some((parse_color(parts[0])?, width, height)))
+}
+
 fn load_background(path: &str) -> Result<RgbaImage> {
-    if let Some(solid) = path.strip_prefix("solid:") {
-        let parts: Vec<_> = solid.split(':').collect();
-        ensure!(parts.len() == 3, "纯色纸张格式应为 solid:#RRGGBB:宽:高");
-        let width = parts[1].parse::<u32>().context("无效纸张宽度")?;
-        let height = parts[2].parse::<u32>().context("无效纸张高度")?;
-        validate_dimensions(width, height)?;
-        return Ok(RgbaImage::from_pixel(
-            width,
-            height,
-            Rgba(parse_color(parts[0])?),
-        ));
+    if let Some((color, width, height)) = parse_solid_paper(path)? {
+        return Ok(RgbaImage::from_pixel(width, height, Rgba(color)));
     }
     let bytes = assets::background_bytes(&expand_home(path).to_string_lossy())?;
     ensure!(bytes.len() as u64 <= MAX_INPUT_BYTES, "背景文件过大");
@@ -664,6 +670,35 @@ mod tests {
             rect_width: 180,
             rect_height: 120,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn solid_paper_parser_preserves_argb_and_validates_dimensions() {
+        assert_eq!(parse_solid_paper("builtin:bgs/letter.png").unwrap(), None);
+        assert_eq!(
+            parse_solid_paper("solid:#12ab34:200:300").unwrap(),
+            Some(([0x12, 0xab, 0x34, 255], 200, 300))
+        );
+        assert_eq!(
+            parse_solid_paper("solid:#8012ab34:200:300").unwrap(),
+            Some(([0x12, 0xab, 0x34, 128], 200, 300))
+        );
+        assert_eq!(
+            parse_solid_paper("solid:transparent:1:2").unwrap(),
+            Some(([0, 0, 0, 0], 1, 2))
+        );
+        for invalid in [
+            "solid:#ffffff:200",
+            "solid:#ffffff:200:300:400",
+            "solid:#ffffff:zero:300",
+            "solid:#ffffff:200:zero",
+            "solid:#ffffff:0:300",
+            "solid:#ffffff:8193:1",
+            "solid:#ffffff:8192:8192",
+            "solid:not-a-color:200:300",
+        ] {
+            assert!(parse_solid_paper(invalid).is_err(), "{invalid}");
         }
     }
 
