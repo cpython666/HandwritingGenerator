@@ -77,6 +77,7 @@ MCP 是本地 stdio 服务，提供 `list_assets` 和 `render_handwriting`，参
 - `src/clipboard.rs`：原尺寸图片复制与原生剪贴板验收。
 - `src/rendering.rs`：共享排版、裁切、图片编码、校验和预设。
 - `src/assets.rs` / `build.rs`：完整字体压缩与嵌入。
+- `../icons/`：应用图标源文件与[生成记录](../icons/README.md)。GUI 显式设置运行图标，macOS 打包生成 ICNS，Windows 原生构建嵌入 ICO。
 - `src/main.rs` / `src/mcp.rs`：CLI 和 MCP。
 - `tests/cli_mcp.rs`：真实子进程的命令行、协议和输出一致性测试。
 
@@ -85,6 +86,8 @@ MCP 是本地 stdio 服务，提供 `list_assets` 和 `render_handwriting`，参
 ## 本次验收（2026-10-24）
 
 macOS arm64 应用实测约 28.44 MiB，ZIP 25.89 MiB，完整字体的嵌入数据约 22.49 MiB。此前 Qt 应用为 116.68 MiB、ZIP 54.03 MiB；应用体积减少约 75.6%。不同平台和编译器的结果会有差异。
+
+2026-10-25 更新了「星光＋手写纸笺」图标，并修复框架默认图标覆盖 macOS Dock 的问题。更新后本机应用约 30.18 MiB、ZIP 27.66 MiB；完整字体保持不变。
 
 19 项自动测试、Clippy 与格式检查通过。macOS 原生窗口已验证直接拖字同步坐标、输入坐标反向移动文字，以及快速拖动的最终位置。另在点击「复制为图片」后执行原生剪贴板验收，尺寸及全部 RGBA 像素与 GUI 导出的 PNG 一致。
 

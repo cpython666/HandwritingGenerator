@@ -133,8 +133,11 @@ enum Action {
 }
 
 pub fn run() -> anyhow::Result<()> {
+    // eframe also applies this to the macOS Dock, overriding the bundle icon.
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../icons/app-icon-256.png"))?;
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("星笺 · 手写图片生成器")
+        .with_icon(icon)
         .with_inner_size([1200.0, 800.0])
         .with_min_inner_size([840.0, 560.0]);
     if let Ok(size) = std::env::var("XINGJIAN_WINDOW_SIZE") {

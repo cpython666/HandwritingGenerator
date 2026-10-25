@@ -7,6 +7,26 @@ use std::{
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("..");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    // Native Windows builds embed an Explorer icon as well as the runtime icon.
+    #[cfg(windows)]
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var_os("CARGO_FEATURE_GUI").is_some()
+    {
+        println!("cargo:rerun-if-changed=../icons/app-icon.ico");
+        let icon = root.join("icons/app-icon.ico");
+        let resource = out.join("app-icon.rc");
+        fs::write(
+            &resource,
+            format!(
+                "#pragma code_page(65001)\n1 ICON \"{}\"\n",
+                icon.to_str().unwrap().replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        embed_resource::compile_for(&resource, ["xingjian"], embed_resource::NONE)
+            .manifest_required()
+            .expect("Windows SDK resource compiler is required for the application icon");
+    }
     let mut fonts: Vec<_> = fs::read_dir(root.join("fonts"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

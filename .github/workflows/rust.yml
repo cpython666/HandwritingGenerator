@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, master, codex/pure-rust]
   pull_request:
-    paths: ['rust/**', 'fonts/**', 'bgs/**', '.github/workflows/rust.yml']
+    paths: ['rust/**', 'fonts/**', 'bgs/**', 'icons/**', '.github/workflows/rust.yml']
   workflow_dispatch:
 
 permissions:

@@ -6,6 +6,7 @@ from pathlib import Path
 root = Path(SPECPATH)
 app_name = "星笺"
 icon_path = str(root / "logo.png")
+bundle_icon = str(root / "icons" / "app-icon.png")
 
 a = Analysis(
     [str(root / "main.py")],
@@ -38,7 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon_path,
+    icon=bundle_icon,
 )
 coll = COLLECT(
     exe,
@@ -54,7 +55,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name=f"{app_name}.app",
-        icon=icon_path,
+        icon=bundle_icon,
         bundle_identifier="org.handwritinggenerator.desktop",
         info_plist={
             "CFBundleDisplayName": app_name,
