@@ -9,7 +9,7 @@ description: 使用星笺将文字或文本文件生成手写图片、调整字�
 
 本项目的 GUI、CLI 和 MCP 共用 `rendering.py`。在仓库根目录操作；从别处执行时使用 `uv --directory <仓库绝对路径> run …`。
 
-`codex/pure-rust` 分支另有纯 Rust 版本：参见 [Rust 使用说明](../../../rust/README.md)。启动 `cargo run --manifest-path rust/Cargo.toml --release --locked`，构建后使用 `rust/target/release/xingjian assets` / `render` / `mcp --output-dir outputs`；Windows 程序名加 `.exe`。参数沿用下文 CLI，但内置资源优先使用 assets 返回的 `builtin:` 标识。Rust GUI、CLI、MCP 共用 `rust/src/rendering.rs`，修改 Rust 版本时不必修改 Python 实现；完整 9 款字体禁止裁剪字库。构建时压缩并验证原始字体，运行时不需要 Python、Qt 或 WebView。Rust 的内置资源/纯色纸预设标识暂不被 Python 版识别。
+`rust/` 目录提供纯 Rust 版本：参见 [Rust 使用说明](../../../rust/README.md)。启动 `cargo run --manifest-path rust/Cargo.toml --release --locked`，构建后使用 `rust/target/release/xingjian assets` / `render` / `mcp --output-dir outputs`；Windows 程序名加 `.exe`。参数沿用下文 CLI，但内置资源优先使用 assets 返回的 `builtin:` 标识。Rust GUI、CLI、MCP 共用 `rust/src/rendering.rs`，修改 Rust 版本时不必修改 Python 实现；完整 9 款字体禁止裁剪字库。构建时压缩并验证原始字体，运行时不需要 Python、Qt 或 WebView。Rust 的内置资源/纯色纸预设标识暂不被 Python 版识别。
 
 ## 生成图片
 

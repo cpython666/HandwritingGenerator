@@ -2,7 +2,7 @@ name: Rust desktop
 
 on:
   push:
-    branches: [codex/pure-rust]
+    branches: [main, master, codex/pure-rust]
   pull_request:
     paths: ['rust/**', 'fonts/**', 'bgs/**', '.github/workflows/rust.yml']
   workflow_dispatch:

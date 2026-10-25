@@ -22,7 +22,7 @@ Starclip 的「星绘坊 → 月光笺」已接入本项目的手写图片生成
 
 ## 纯 Rust 原生版
 
-`codex/pure-rust` 分支的 [Rust 版](rust/README.md) 使用 egui/eframe 原生桌面界面，完整内置 9 款字体和纸张，无需 Python、Qt 或 WebView，支持 macOS / Windows 构建。
+`rust/` 目录中的 [Rust 版](rust/README.md) 使用 egui/eframe 原生桌面界面，完整内置 9 款字体和纸张，无需 Python、Qt 或 WebView，支持 macOS / Windows 构建。
 
 - 直接拖动预览中的文字，位置参数双向同步；也可输入数值精确定位。
 - 纸张与文字分层缓存，连续调整字号、字距等参数时持续更新预览。
