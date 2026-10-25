@@ -1,0 +1,55 @@
+name: Desktop checks and builds
+
+on:
+  push:
+    branches: [main, master, codex/pure-rust]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.29"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra mcp --group build
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+      - name: Test GUI, rendering, CLI and MCP
+        run: uv run --no-sync python -m unittest discover -s tests -v
+      - name: Build desktop app
+        run: uv run --no-sync pyinstaller --noconfirm main.spec
+      - name: Archive macOS app with executable permissions and symlinks
+        if: runner.os == 'macOS'
+        run: tar -czf HandwritingGenerator-macOS-${{ runner.arch }}.tar.gz -C dist '星笺.app'
+      - name: Archive Windows app
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path 'dist/星笺' -DestinationPath HandwritingGenerator-Windows-${{ runner.arch }}.zip
+      - name: Upload desktop package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: HandwritingGenerator-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            HandwritingGenerator-*.tar.gz
+            HandwritingGenerator-*.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

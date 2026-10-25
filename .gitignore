@@ -1,5 +1,11 @@
-build
-dist
-test
-bgs
-.idea
+/build/
+/dist/
+/test/
+.idea/
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+/outputs/
+/.codex/config.toml

@@ -2,6 +2,8 @@
 
 纯 Rust 桌面编辑器与图片渲染核心。界面使用 egui/eframe + OpenGL，字体排版使用 rustybuzz/fontdue；不需要 Python、Qt、Node、浏览器或 WebView2。完整 9 款字体和全部内置纸张随可执行文件携带，离线使用。
 
+新项目 [星笺 Starclip](https://github.com/cpython666/starclip#星绘坊) 已在「星绘坊 → 月光笺」中通过本地 CLI 接入本渲染器，可从文字或剪贴记录生成手写纸笺。Starclip 目前需要单独安装或构建本项目的 Rust 版，再在月光笺中点击「选择星笺应用」；集成范围及版本说明见[仓库首页](../README.md#新项目星笺-starclip)。
+
 ## 运行和构建
 
 开发需要 Rust 1.88+；macOS 需要 Xcode Command Line Tools，Windows 需要 MSVC C++ 构建工具。首次构建下载 Rust 依赖，以后可以使用 Cargo 本地缓存。

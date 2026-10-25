@@ -1,570 +1,712 @@
+"""Desktop editor; rendering and file formats are shared with CLI and MCP."""
+
 import sys
-from PyQt6.QtWidgets import (QApplication, QGraphicsView, QGraphicsScene,QWidget,QHBoxLayout,QVBoxLayout,QLabel,
-                             QGraphicsPixmapItem, QGraphicsRectItem, QMainWindow,QMessageBox,
-                             QGraphicsTextItem, QPushButton,QInputDialog,QComboBox,
-                             QSlider,QVBoxLayout,QFileDialog,QColorDialog,QTextEdit,QDialog,QLineEdit)
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import (QGuiApplication,QPixmap, 
-                         QPainter, QImage, QFont, 
-                         QKeySequence,QShortcut,QFont, 
-                         QFontDatabase,QColor,QIcon)
+from dataclasses import replace
+from pathlib import Path
+
+from PyQt6.QtCore import QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PyQt6.QtWidgets import (
+    QApplication,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsTextItem,
+    QGraphicsView,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from rendering import (
+    MAX_DIMENSION,
+    MAX_PIXELS,
+    RenderConfig,
+    list_assets,
+    load_preset,
+    render_image,
+    resource_path,
+    save_image,
+    save_preset,
+)
+from ui_style import apply_theme
+
+IMAGE_FILTER = "图片 (*.png *.jpg *.jpeg *.webp *.bmp)"
+SAVE_FILTER = "PNG (*.png);;JPEG (*.jpg);;WebP (*.webp)"
+SAMPLE_TEXT = "把一颗星，藏进字里行间。\n\n愿每一句未曾说出口的话，\n都能在纸上，找到温柔的回响。"
+
+
+def choose_save_path(parent, title, suggested, filters):
+    path, selected = QFileDialog.getSaveFileName(parent, title, suggested, filters)
+    if path and not Path(path).suffix:
+        suffix = {"JPEG (*.jpg)": ".jpg", "WebP (*.webp)": ".webp", "JSON (*.json)": ".json"}
+        path += suffix.get(selected, ".png")
+        # The native dialog only confirmed the name before we added its extension.
+        if (
+            Path(path).exists()
+            and QMessageBox.question(
+                parent,
+                "覆盖文件",
+                f"{path} 已存在，是否覆盖？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return ""
+    return path
+
 
 class ImageCreator(QDialog):
-    def __init__(self):
-        super().__init__()
+    created = pyqtSignal(str)
 
-        self.initUI()
-        self.initLayout()
-        self.center()
-    
-    def initUI(self):
-        self.setWindowTitle('输出一个纯色背景图片')
-        self.setGeometry(100,100,300,300)
-        self.setWindowIcon(QIcon('logo.png'))
-    
-    def center(self):
-        qr=self.frameGeometry()
-        cp=QGuiApplication.primaryScreen().availableGeometry().center()
-        qr.moveCenter(cp)
-        self.move(qr.topLeft())
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("创建纯色背景")
+        self.color = QColor("white")
+        layout = QFormLayout(self)
+        self.width_input = QSpinBox()
+        self.height_input = QSpinBox()
+        for control, value in ((self.width_input, 724), (self.height_input, 1024)):
+            control.setRange(1, MAX_DIMENSION)
+            control.setValue(value)
+            control.setSuffix(" px")
+        self.alpha = QSpinBox()
+        self.alpha.setRange(0, 255)
+        self.alpha.setValue(255)
+        self.color_button = QPushButton("选择颜色：#ffffff")
+        self.color_button.clicked.connect(self.choose_color)
+        layout.addRow("宽度", self.width_input)
+        layout.addRow("高度", self.height_input)
+        layout.addRow("不透明度", self.alpha)
+        layout.addRow(self.color_button)
+        create = QPushButton("保存并使用")
+        create.clicked.connect(self.create_image)
+        layout.addRow(create)
 
-    def initLayout(self):
-
-        self.color_label = QLabel('当前颜色:(255,255,255,255)', self)
-        self.color_button = QPushButton('选择颜色', self)
-        self.color=QColor('black')
-        self.color_button.clicked.connect(self.showColorDialog)
-        color_layout=QHBoxLayout()
-        color_layout.addStretch(1)
-        color_layout.addWidget(self.color_label)
-        color_layout.addWidget(self.color_button)
-        color_layout.addStretch(1)
-
-        self.bg_a=QLabel('图片不透明度：255')
-        self.bg_a_slider=QSlider(Qt.Orientation.Horizontal)
-        self.bg_a_slider.setRange(0, 255)
-        self.bg_a_slider.setSingleStep(1)
-        self.bg_a_slider.setValue(255)
-        bg_a_layout=QHBoxLayout()
-        bg_a_layout.addStretch(1)
-        bg_a_layout.addWidget(self.bg_a)
-        bg_a_layout.addWidget(self.bg_a_slider)
-        bg_a_layout.addStretch(1)
-        self.bg_a_slider.valueChanged.connect(self.update_bg_a_label)
-
-        self.color_pre=QLabel('颜色预览：')
-        self.color_rect=QLabel()
-        self.color_rect.setFixedSize(50,50)
-        self.color_rect.setStyleSheet(f'background-color: {self.color.name()}')
-        color_pre_layout=QHBoxLayout()
-        color_pre_layout.addStretch(1)
-        color_pre_layout.addWidget(self.color_pre)
-        color_pre_layout.addWidget(self.color_rect)
-        color_pre_layout.addStretch(1)
-
-        self.width_label = QLabel('图片长度:', self)
-        self.width_input_line = QLineEdit(self)
-        self.width_input_line.setPlaceholderText('在这里输入整数')
-        self.width_unit_label = QLabel('像素', self)
-        width_input_layout = QHBoxLayout()
-        width_input_layout.addStretch(1)
-        width_input_layout.addWidget(self.width_label)
-        width_input_layout.addWidget(self.width_input_line)
-        width_input_layout.addWidget(self.width_unit_label)
-        width_input_layout.addStretch(1)
-
-        self.height_label = QLabel('图片宽度:', self)
-        self.height_input_line = QLineEdit(self)
-        self.height_input_line.setPlaceholderText('在这里输入整数')
-        self.height_unit_label = QLabel('像素', self)
-        height_input_layout = QHBoxLayout()
-        height_input_layout.addStretch(1)
-        height_input_layout.addWidget(self.height_label)
-        height_input_layout.addWidget(self.height_input_line)
-        height_input_layout.addWidget(self.height_unit_label)
-        height_input_layout.addStretch(1)
-
-        self.create_button = QPushButton('创建图片', self)
-        self.create_button.clicked.connect(self.createImage)
-
-        layout = QVBoxLayout()
-        layout.addLayout(color_layout)
-        layout.addLayout(bg_a_layout)
-        layout.addLayout(color_pre_layout)
-
-        layout.addLayout(width_input_layout)
-        layout.addLayout(height_input_layout)
-
-        layout.addWidget(self.create_button)
-
-        self.setLayout(layout)
-    
-    def update_bg_a_label(self):
-        self.bg_a.setText(f'图片不透明度：{self.bg_a_slider.value()}')
-        self.color.setAlpha(self.bg_a_slider.value())
-        self.color_rect.setStyleSheet(f'background-color: {self.color.name()}')
-
-    def showColorDialog(self):
-        color = QColorDialog.getColor()
+    def choose_color(self):
+        color = QColorDialog.getColor(self.color, self)
         if color.isValid():
-            self.color_label.setText(f'当前颜色:{self.color.getRgb()}')
-            self.color_button.setStyleSheet(f'background-color: {color.name()}')
-            self.color_rect.setStyleSheet(f'background-color: {color.name()}')
             self.color = color
+            self.color_button.setText(f"选择颜色：{color.name()}")
 
-    def createImage(self):
-        width = int(self.width_input_line.text())
-        height = int(self.height_input_line.text())
-        if width <= 0 or height <= 0:
+    def create_image(self):
+        width, height = self.width_input.value(), self.height_input.value()
+        if width * height > MAX_PIXELS:
+            QMessageBox.warning(self, "图片过大", f"像素总数不能超过 {MAX_PIXELS:,}。")
             return
-        if not hasattr(self, 'color'):
+        path = choose_save_path(self, "保存背景", "background.png", "PNG (*.png)")
+        if not path:
             return
-        image = QPixmap(width, height)
+        self.color.setAlpha(self.alpha.value())
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(self.color)
-        image.save(f'./bgs/{self.color.name()}-{width}x{height}.png')
-        QMessageBox.information(self, '提示', '图片已保存在 bgs 目录下！', QMessageBox.StandardButton.Ok)
-        
-        # print(f'图片已创建: {self.color.name()}-{width}x{height}.png')
+        try:
+            saved = save_image(image, path, overwrite=True)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return
+        self.created.emit(str(saved))
+        self.accept()
+
+
+class GraphicsView(QGraphicsView):
+    zoom_changed = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setScene(QGraphicsScene(self))
+        self.page = self.scene().addPixmap(QPixmap())
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(46, 35, 68, 35))
+        self.page.setGraphicsEffect(shadow)
+        self.setBackgroundBrush(QColor("#eeedf3"))
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setRenderHints(
+            QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
+        )
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.origin = None
+        self.drawing_rect = None
+        self.auto_fit = True
+        self.region = self.scene().addRect(QRectF())
+        pen = QPen(QColor("#9679d0"), 1, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        self.region.setPen(pen)
+        self.region.setZValue(2)
+        self.region.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.region.hide()
+
+    def set_image(self, image):
+        self.page.setPixmap(QPixmap.fromImage(image))
+        self.setSceneRect(QRectF(image.rect()))
+
+    def fit_page(self):
+        if not self.page.pixmap().isNull():
+            self.auto_fit = True
+            self.fitInView(self.page, Qt.AspectRatioMode.KeepAspectRatio)
+            self.scale(0.94, 0.94)
+            self.zoom_changed.emit(self.transform().m11())
+
+    def set_zoom(self, value):
+        self.auto_fit = False
+        value = max(0.05, min(value, 16))
+        self.scale(value / self.transform().m11(), value / self.transform().m11())
+        self.zoom_changed.emit(self.transform().m11())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.auto_fit:
+            self.fit_page()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.pixelDelta().y() or event.angleDelta().y()
+            if delta:
+                self.set_zoom(self.transform().m11() * 1.2 ** (max(-240, min(delta, 240)) / 120))
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.origin = self.mapToScene(event.pos())
+            self.drawing_rect = self.scene().addRect(QRectF(self.origin, self.origin))
+            self.drawing_rect.setZValue(1)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.origin is not None and self.drawing_rect is not None:
+            self.drawing_rect.setRect(
+                QRectF(self.origin, self.mapToScene(event.pos())).normalized()
+            )
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton and self.drawing_rect is not None:
+            rect = QRectF(self.origin, self.mapToScene(event.pos())).normalized()
+            self.drawing_rect.setRect(rect)
+            label = QGraphicsTextItem(
+                f"({rect.x():.0f}, {rect.y():.0f}) · {rect.width():.0f} × {rect.height():.0f}",
+                self.drawing_rect,
+            )
+            label.setDefaultTextColor(QColor("#c0392b"))
+            label.setPos(rect.topLeft())
+            self.origin = self.drawing_rect = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        item = self.itemAt(event.pos())
+        if isinstance(item, QGraphicsTextItem):
+            item = item.parentItem()
+        if isinstance(item, QGraphicsRectItem) and item is not self.region:
+            self.scene().removeItem(item)
+            if item is self.drawing_rect:
+                self.origin = self.drawing_rect = None
+        else:
+            super().mouseDoubleClickEvent(event)
+
+
+class DecimalSpinBox(QDoubleSpinBox):
+    def textFromValue(self, value):
+        text = super().textFromValue(value)
+        separator = self.locale().decimalPoint()
+        return (
+            text.rstrip(self.locale().zeroDigit()).rstrip(separator) if separator in text else text
+        )
+
 
 class HandFontWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        apply_theme(QApplication.instance())
+        self.setWindowTitle("星笺 · 手写图片生成器")
+        self.setWindowIcon(QIcon(str(resource_path("logo.png"))))
+        self.setMinimumSize(840, 560)
+        screen = self.screen().availableGeometry()
+        self.resize(min(1280, screen.width() - 48), min(880, screen.height() - 80))
+        self.config = RenderConfig(text=SAMPLE_TEXT)
+        self._loading = True
+        self.image = None
+        self.render_timer = QTimer(self)
+        self.render_timer.setSingleShot(True)
+        self.render_timer.setInterval(120)
+        self.render_timer.timeout.connect(self.update_preview)
+        self.view = GraphicsView(self)
+        self.controls = {}
+        self.sliders = {}
+        self.assets = list_assets()
 
-        self.initUI()
+        body = QWidget()
+        body.setObjectName("workspace")
+        root = QVBoxLayout(body)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        header = QFrame()
+        header.setObjectName("header")
+        bar = QHBoxLayout(header)
+        bar.setContentsMargins(24, 16, 24, 16)
+        mark = QLabel("星")
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setFixedSize(42, 42)
+        mark.setStyleSheet(
+            "background: #6550bd; color: white; border-radius: 12px; font-size: 22px;"
+        )
+        bar.addWidget(mark)
+        brand = QVBoxLayout()
+        brand.setSpacing(0)
+        brand.addWidget(self.label("星笺", "brand"))
+        brand.addWidget(self.label("让文字，带一点星光。", "eyebrow"))
+        bar.addLayout(brand)
+        bar.addStretch()
+        bar.addWidget(self.button("关于星笺", self.show_about))
+        self.open_button = self.button("打开预设", self.open_preset)
+        self.save_button = self.button("保存预设", self.write_preset)
+        self.export_button = self.button("导出图片", self.export_image)
+        self.export_button.setObjectName("primary")
+        for button in (self.open_button, self.save_button, self.export_button):
+            bar.addWidget(button)
+        root.addWidget(header)
 
-    def initUI(self):
-        self.setGeometry(100, 100, 1200, 600)
-        self.setWindowTitle('手写字体图片生成器')
-        self.setWindowIcon(QIcon('logo.png'))
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(14)
+        inspector = QFrame()
+        inspector.setObjectName("inspector")
+        inspector.setMinimumWidth(320)
+        inspector.setMaximumWidth(440)
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        inspector_layout.addWidget(self.tabs)
+        self.splitter.addWidget(inspector)
 
-        self.initView()
-        self.config_widget=self.initConfigForm()
+        content = self.tab_page("内容")
+        introduction = self.label("把想说的话，写成一页有温度的纸笺。", "hint")
+        introduction.setWordWrap(True)
+        content.addWidget(introduction)
+        heading = QHBoxLayout()
+        heading.addWidget(self.label("写下你的文字", "sectionTitle"))
+        heading.addStretch()
+        self.character_count = self.label("0 字", "count")
+        heading.addWidget(self.character_count)
+        content.addLayout(heading)
+        self.text_edit = QTextEdit()
+        self.text_edit.setAcceptRichText(False)
+        self.text_edit.setPlaceholderText("写一封信，留一段诗，或记下今晚的星光…")
+        self.text_edit.setMinimumHeight(180)
+        self.text_edit.setMaximumHeight(280)
+        self.text_edit.setAccessibleName("要生成的文字")
+        self.text_edit.textChanged.connect(self.schedule_preview)
+        self.text_edit.textChanged.connect(self.update_character_count)
+        content.addWidget(self.text_edit)
+        content.addSpacing(12)
+        content.addWidget(self.label("笔迹与墨色", "sectionTitle"))
+        content.addWidget(self.label("选择一种喜欢的手写风格", "hint"))
+        font_row = QHBoxLayout()
+        self.font_combo = QComboBox()
+        self.font_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.font_combo.setMinimumContentsLength(10)
+        self.font_combo.setAccessibleName("手写字体")
+        for path in self.assets["fonts"]:
+            self.font_combo.addItem(Path(path).stem, path)
+        self.font_combo.currentIndexChanged.connect(self.schedule_preview)
+        font_row.addWidget(self.font_combo, 1)
+        font_row.addWidget(self.button("导入…", self.choose_font))
+        content.addLayout(font_row)
+        type_form = QFormLayout()
+        type_form.setSpacing(12)
+        self.add_control(type_form, "font_size", "字号 · pt", 1, 200, 1)
+        self.add_control(type_form, "font_weight", "字重", 100, 900, 100)
+        content.addLayout(type_form)
+        ink = QHBoxLayout()
+        self.color_swatch = QLabel()
+        self.color_swatch.setFixedSize(24, 24)
+        ink.addWidget(self.color_swatch)
+        self.color_button = self.button("", self.choose_color)
+        self.color_button.setAccessibleName("选择文字颜色")
+        ink.addWidget(self.color_button, 1)
+        content.addLayout(ink)
+        content.addStretch()
+        content.addWidget(self.label("一页纸笺，收藏日常的微光。", "hint"))
 
-        # 将配置窗口添加到主窗口的布局中
-        main_layout = QHBoxLayout()
-        main_layout.addWidget(self.config_widget)
-        main_layout.addWidget(self.view)
-        main_widget = QWidget(self)
-        main_widget.setLayout(main_layout)
-        self.setCentralWidget(main_widget)
+        layout_page = self.tab_page("排版")
+        layout_page.addWidget(self.label("文字区域", "sectionTitle"))
+        layout_page.addWidget(self.label("以纸张左上角为起点，单位为像素", "hint"))
+        region_form = QFormLayout()
+        region_form.setSpacing(14)
+        for key, label, minimum in (
+            ("x", "左边距", 0),
+            ("y", "上边距", 0),
+            ("rect_width", "区域宽度", 1),
+            ("rect_height", "区域高度", 1),
+        ):
+            self.add_control(region_form, key, label, minimum, MAX_DIMENSION, 1)
+        layout_page.addLayout(region_form)
+        layout_page.addSpacing(20)
+        layout_page.addWidget(self.label("书写节奏", "sectionTitle"))
+        spacing_form = QFormLayout()
+        spacing_form.setSpacing(14)
+        self.add_control(spacing_form, "font_spacing", "附加字距 · em", -1.0, 2.0, 0.05)
+        self.add_control(spacing_form, "line_spacing", "行距 · 倍数", 0.1, 5.0, 0.05)
+        layout_page.addLayout(spacing_form)
+        layout_page.addSpacing(12)
+        note = self.label(
+            "打开画布上的「文字边界」，可查看排版范围。超出区域的文字会裁切。", "hint"
+        )
+        note.setWordWrap(True)
+        layout_page.addWidget(note)
+        layout_page.addStretch()
 
-        # 添加导出图片的快捷键 Ctrl + S
-        export_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self)
-        export_shortcut.activated.connect(self.view.exportSceneToImage)
+        paper_page = self.tab_page("纸张")
+        paper_page.addWidget(self.label("为文字选一张纸", "sectionTitle"))
+        paper_page.addWidget(self.label("内置信纸，也可以使用自己的图片", "hint"))
+        self.paper_combo = QComboBox()
+        self.paper_combo.setAccessibleName("背景纸张")
+        self.paper_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.paper_combo.setMinimumContentsLength(10)
+        for path in self.assets["backgrounds"]:
+            self.paper_combo.addItem(Path(path).stem, path)
+        self.paper_combo.currentIndexChanged.connect(self.choose_builtin_background)
+        paper_page.addWidget(self.paper_combo)
+        self.paper_thumbnail = self.label("", "paperThumbnail")
+        self.paper_thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.paper_thumbnail.setMinimumHeight(200)
+        paper_page.addWidget(self.paper_thumbnail)
+        self.background_label = self.label("", "paperName")
+        self.background_label.setWordWrap(True)
+        paper_page.addWidget(self.background_label)
+        paper_page.addWidget(self.button("从文件选择背景…", self.choose_background))
+        paper_page.addWidget(self.button("创建纯色纸张", self.create_background))
+        paper_page.addStretch()
+        paper_page.addWidget(self.label("导出尺寸与背景原图保持一致。", "hint"))
 
-        self.updateView()
+        preview = QFrame()
+        preview.setObjectName("preview")
+        preview.setMinimumWidth(420)
+        canvas = QVBoxLayout(preview)
+        canvas.setContentsMargins(14, 14, 14, 12)
+        canvas.setSpacing(12)
+        preview_title = QHBoxLayout()
+        preview_title.addWidget(self.label("画布预览", "sectionTitle"))
+        preview_title.addStretch()
+        self.canvas_size = self.label("", "badge")
+        preview_title.addWidget(self.canvas_size)
+        canvas.addLayout(preview_title)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+        self.boundary_button = self.button("文字边界", None)
+        self.boundary_button.setCheckable(True)
+        self.boundary_button.toggled.connect(self.view.region.setVisible)
+        toolbar.addWidget(self.boundary_button)
+        toolbar.addStretch()
+        toolbar.addWidget(
+            self.button(
+                "−", lambda: self.view.set_zoom(self.view.transform().m11() / 1.2), "缩小画布"
+            )
+        )
+        self.zoom_label = self.label("100%")
+        self.zoom_label.setMinimumWidth(44)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.view.zoom_changed.connect(lambda zoom: self.zoom_label.setText(f"{zoom:.0%}"))
+        toolbar.addWidget(self.zoom_label)
+        toolbar.addWidget(
+            self.button(
+                "+", lambda: self.view.set_zoom(self.view.transform().m11() * 1.2), "放大画布"
+            )
+        )
+        toolbar.addWidget(self.button("1:1", lambda: self.view.set_zoom(1), "100% 画布缩放"))
+        toolbar.addWidget(self.button("适应", self.view.fit_page, "让整张纸适应窗口"))
+        canvas.addLayout(toolbar)
+        canvas.addWidget(self.view, 1)
+        modifier = "⌘" if sys.platform == "darwin" else "Ctrl"
+        guide = self.label(f"拖动画布平移  ·  {modifier} + 滚轮缩放  ·  右键拖动测量", "hint")
+        guide.setWordWrap(True)
+        canvas.addWidget(guide)
+        self.splitter.addWidget(preview)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([350, 830])
+        workspace = QVBoxLayout()
+        workspace.setContentsMargins(20, 18, 20, 8)
+        workspace.addWidget(self.splitter)
+        root.addLayout(workspace, 1)
+        self.setCentralWidget(body)
+        self.shortcuts = []
+        for key, callback, button in (
+            (QKeySequence.StandardKey.Open, self.open_preset, self.open_button),
+            (QKeySequence.StandardKey.SaveAs, self.write_preset, self.save_button),
+            (QKeySequence.StandardKey.Save, self.export_image, self.export_button),
+            (QKeySequence.StandardKey.Close, self.close, None),
+        ):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(callback)
+            self.shortcuts.append(shortcut)
+            if button is not None:
+                button.setToolTip(
+                    f"{button.text()} · {shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)}"
+                )
+        self.apply_config(self.config)
+        self.update_preview()
+        QTimer.singleShot(0, self.view.fit_page)
 
-        self.show()
-    
-    def initView(self):
-        self.my_scene = QGraphicsScene(self)
-        self.view = GraphicsView(self.my_scene, self)
-        self.setCentralWidget(self.view)
+    def show_about(self):
+        QMessageBox.about(
+            self,
+            "关于星笺",
+            "<h2>星笺</h2>"
+            "<p>手写图片生成器 · 让文字，带一点星光。</p>"
+            "<p>把想说的话，写成一页有温度的纸笺。<br>"
+            "星笺将文字化作手写模样，陪你写一封信、留一段诗，"
+            "也收藏日常里微小而明亮的心事。</p>"
+            "<p>挑选笔迹与纸张，调整墨色与留白，实时预览并导出图片；"
+            "把喜欢的排版存为预设，留给下一次书写。</p>"
+            "<p>文字与图片均在本地处理，离线也能安心书写。</p>",
+        )
 
-    def initConfigForm(self):
-        # 创建配置参数窗口
-        config_widget = QWidget(self)
-        config_layout = QVBoxLayout(config_widget)
-        # 添加文字区域配置
-        text_config_label = QLabel('效果配置：')
-        config_layout.addWidget(text_config_label)
-        # 选择背景图片
-        self.label_bg=QLabel('letter.png')
-        self.button_bg=QPushButton('选择背景图')
-        self.button_bg.clicked.connect(self.show_file_dialog)
-        self.bg_path='./bgs/letter.png'
-        config_layout.addWidget(self.label_bg)
-        config_layout.addWidget(self.button_bg)
+    @staticmethod
+    def label(text, name=""):
+        label = QLabel(text)
+        label.setObjectName(name)
+        return label
 
-        creat_bg_layout=QHBoxLayout()
-        creat_bg_label=QLabel('没有喜欢的背景图片？')
-        creat_bg_button=QPushButton('创建一个纯色背景')
-        creat_bg_button.clicked.connect(self.create_bg_widget)
-        creat_bg_layout.addWidget(creat_bg_label)
-        creat_bg_layout.addWidget(creat_bg_button)
-        config_layout.addLayout(creat_bg_layout)
+    @staticmethod
+    def button(text, callback, description=""):
+        button = QPushButton(text)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        if callback is not None:
+            button.clicked.connect(callback)
+        button.setAccessibleName(description or text)
+        if description:
+            button.setToolTip(description)
+        return button
 
-        # 选择字体
-        self.label_font = QLabel("选择字体：")
-        self.combo_box = QComboBox(self)
-        self.combo_box.addItem('hand.ttf')
-        self.combo_box.addItem('李国夫董事长手写体.ttf')
-        self.combo_box.addItem('品如手写体.ttf')
-        self.combo_box.addItem('青叶手写体.ttf')
-        self.combo_box.addItem('上首鸿志手写体.ttf')
-        self.combo_box.addItem('手写大象体.ttf')
-        self.combo_box.addItem('未知手写体_1.ttf')
-        self.combo_box.addItem('薛文轩钢笔楷体.ttf')
-        self.combo_box.addItem('张维镜手写楷书.ttf')
-        config_layout.addWidget(self.label_font)
-        config_layout.addWidget(self.combo_box)
-        self.combo_box.currentIndexChanged.connect(self.updateView)
-        # 选择字体颜色
-        self.label_font_color = QLabel("当前字体颜色：black")
-        self.button_font_color = QPushButton('选择字体颜色')
-        self.font_color='black'
-        config_layout.addWidget(self.label_font_color)
-        config_layout.addWidget(self.button_font_color)
-        self.button_font_color.clicked.connect(self.show_color_dialog)
+    def tab_page(self, title):
+        page = QWidget()
+        page.setObjectName("tabPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 20, 18, 20)
+        layout.setSpacing(10)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, title)
+        return layout
 
-        self.label_text=QLabel('要显示的文字:')
-        self.text_edit = QTextEdit(self)
-        self.text_edit.setPlaceholderText('要显示的文字')
-        self.text_edit.setText('''花费了一天，跟gpt3.5对话进百句，修修改改，最终做成这样的效果。
-我的字迹一直很差，我也很讨厌写字，我花费了很多时间在练字上但我的字迹不好反坏。所以当我看到生成手写字图片的可能时，我便开始了迫不及待地尝试。
-做到一半的时候我突然想到网上有没有已经做出来的。确实有，有点小失望，但又细看了一下发现它的应该操作比我的复杂点，所以我又继续做完就是现在的效果。''')
-        # text_edit.toPlainText()
-        self.text_edit.textChanged.connect(self.updateView)
-        config_layout.addWidget(self.label_text)
-        config_layout.addWidget(self.text_edit)
+    def add_control(self, form, key, label, low, high, step):
+        decimal = isinstance(step, float)
+        spin = DecimalSpinBox() if decimal else QSpinBox()
+        if decimal:
+            spin.setDecimals(6)
+        spin.setRange(low, high)
+        spin.setSingleStep(step)
+        spin.setAccessibleName(label)
+        spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        spin.setMinimumWidth(88)
+        spin.valueChanged.connect(self.schedule_preview)
+        self.controls[key] = spin
+        if decimal:
+            form.addRow(label, spin)
+        else:
+            row = QHBoxLayout()
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(low, high)
+            slider.setSingleStep(step)
+            slider.setAccessibleName(label)
+            self.sliders[key] = slider
+            slider.valueChanged.connect(spin.setValue)
 
-        # 坐标信息
-        # 创建滑块调节数值并为其设置标签显示当前数值
-        self.slider_x = QSlider(Qt.Orientation.Horizontal)
-        self.slider_x.setRange(0, 500)
-        self.slider_x.setSingleStep(1)
-        self.slider_x.valueChanged.connect(self.updateView)
-        self.slider_x.setValue(0)
-        self.label_x = QLabel("文字坐标x：0")
-        config_layout.addWidget(self.label_x)
-        config_layout.addWidget(self.slider_x)
+            def sync_slider(value):
+                slider.setMaximum(max(slider.maximum(), value))
+                slider.setValue(value)
 
-        self.slider_y = QSlider(Qt.Orientation.Horizontal)
-        self.slider_y.setRange(0, 800)
-        self.slider_y.setSingleStep(1)
-        self.slider_y.valueChanged.connect(self.updateView)
-        self.slider_x.setValue(0)
-        self.label_y = QLabel("文字坐标y：0")
-        config_layout.addWidget(self.label_y)
-        config_layout.addWidget(self.slider_y)
+            spin.valueChanged.connect(sync_slider)
+            row.addWidget(slider, 1)
+            row.addWidget(spin)
+            form.addRow(label, row)
 
-        # 文字区域宽度
-        self.slider_width = QSlider(Qt.Orientation.Horizontal)
-        self.slider_width.setRange(10, 2000)
-        self.slider_width.setSingleStep(1)
-        self.slider_width.setValue(100)
-        self.slider_width.valueChanged.connect(self.updateView)
-        self.label_width = QLabel("文字显示宽度：100")
-        config_layout.addWidget(self.label_width)
-        config_layout.addWidget(self.slider_width)        
-        
-        self.slider_height = QSlider(Qt.Orientation.Horizontal)
-        self.slider_height.setRange(1, 2000)
-        self.slider_height.setSingleStep(1)
-        self.slider_height.setValue(200)
-        self.slider_height.valueChanged.connect(self.updateView)
-        self.label_height = QLabel("文字显示高度：200")
-        config_layout.addWidget(self.label_height)
-        config_layout.addWidget(self.slider_height)
+    def update_character_count(self):
+        self.character_count.setText(f"{len(self.text_edit.toPlainText()):,} 字")
 
-        # 字体大小
-        self.slider_font_size = QSlider(Qt.Orientation.Horizontal)
-        self.slider_font_size.setRange(1, 100)
-        self.slider_font_size.setSingleStep(1)
-        self.slider_font_size.setValue(16)
-        self.slider_font_size.valueChanged.connect(self.updateView)
-        self.label_font_size = QLabel("文字大小：16")
-        config_layout.addWidget(self.label_font_size)
-        config_layout.addWidget(self.slider_font_size)
-        # 字体粗细
-        self.slider_font_weight = QSlider(Qt.Orientation.Horizontal)
-        self.slider_font_weight.setRange(100, 1000)
-        self.slider_font_weight.setSingleStep(100)
-        self.slider_font_weight.setValue(500)
-        self.slider_font_weight.valueChanged.connect(self.updateView)
-        self.label_font_weight = QLabel("文字粗细：500")
-        config_layout.addWidget(self.label_font_weight)
-        config_layout.addWidget(self.slider_font_weight)
+    def choose_builtin_background(self):
+        if not self._loading and self.paper_combo.currentData():
+            self.use_config(replace(self.current_config(), bg_path=self.paper_combo.currentData()))
 
-        # 字体间距
-        self.slider_font_spacing = QSlider(Qt.Orientation.Horizontal)
-        self.slider_font_spacing.setRange(-20,20)
-        self.slider_font_spacing.setSingleStep(1)
-        self.slider_font_spacing.setValue(2)
-        self.slider_font_spacing.valueChanged.connect(self.updateView)
-        self.label_font_spacing = QLabel("字体间距：0.1")
-        config_layout.addWidget(self.label_font_spacing)
-        config_layout.addWidget(self.slider_font_spacing)
+    def update_paper(self):
+        index = self.paper_combo.findData(self.config.bg_path)
+        if index < 0:
+            self.paper_combo.addItem(Path(self.config.bg_path).stem, self.config.bg_path)
+            index = self.paper_combo.count() - 1
+        self.paper_combo.setCurrentIndex(index)
+        thumbnail = QPixmap(self.config.bg_path)
+        if not thumbnail.isNull():
+            ratio = self.devicePixelRatioF()
+            thumbnail = thumbnail.scaled(
+                QSize(round(220 * ratio), round(200 * ratio)),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            thumbnail.setDevicePixelRatio(ratio)
+            self.paper_thumbnail.setPixmap(thumbnail)
 
-        # 行间距
-        self.slider_line_spacing = QSlider(Qt.Orientation.Horizontal)
-        self.slider_line_spacing.setRange(20,80)
-        self.slider_line_spacing.setSingleStep(1)
-        self.slider_line_spacing.setValue(40)
-        self.slider_line_spacing.valueChanged.connect(self.updateView)
-        self.label_line_spacing = QLabel("行间距：1")
-        config_layout.addWidget(self.label_line_spacing)
-        config_layout.addWidget(self.slider_line_spacing)
+    def update_ink(self):
+        self.color_button.setText(self.config.font_color)
+        self.color_swatch.setStyleSheet(
+            f"background: {QColor(self.config.font_color).name()}; border: 1px solid #d0cbd8; border-radius: 12px;"
+        )
 
-        # 添加导出按钮
-        export_btn = QPushButton('导出图片：', self)
-        export_btn.clicked.connect(self.view.exportSceneToImage)
-        config_layout.addWidget(export_btn)
-        config_widget.setLayout(config_layout)
+    def apply_config(self, config):
+        self._loading = True
+        self.config = config
+        self.background_label.setText(f"背景：{Path(config.bg_path).name}")
+        self.background_label.setToolTip(config.bg_path)
+        index = self.font_combo.findData(config.font_path)
+        if index < 0:
+            self.font_combo.addItem(Path(config.font_path).name, config.font_path)
+            index = self.font_combo.count() - 1
+        self.font_combo.setCurrentIndex(index)
+        self.update_ink()
+        self.update_paper()
+        self.text_edit.setPlainText(config.text)
+        for key, control in self.controls.items():
+            control.setValue(getattr(config, key))
+        self._loading = False
+        self.schedule_preview()
 
-        return config_widget
-    
-    def create_bg_widget(self):
-        self.dialog=ImageCreator()
-        self.dialog.show()
-    
-    def show_file_dialog(self):
-        # 创建文件选择框
-        file_dialog = QFileDialog(self)
-        file_dialog.setWindowTitle('Open File')
-        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+    def current_config(self):
+        return replace(
+            self.config,
+            text=self.text_edit.toPlainText(),
+            font_path=self.font_combo.currentData() or self.config.font_path,
+            **{key: control.value() for key, control in self.controls.items()},
+        )
 
-        # 显示文件选择框并等待用户选择
-        if file_dialog.exec() == QFileDialog.DialogCode.Accepted:
-            # 获取用户选择的文件路径
-            selected_file = file_dialog.selectedFiles()[0]
-            self.label_bg.setText(selected_file)
-            self.bg_path=selected_file
-            self.updateView()
-    def show_color_dialog(self):
-        # 创建颜色选择框
-        color_dialog = QColorDialog(self)
-        color_dialog.setWindowTitle('Choose Color')
+    def schedule_preview(self, *_):
+        if not self._loading:
+            self.render_timer.start()
 
-        # 设置初始颜色（可选）
-        color_dialog.setCurrentColor(QColor(255, 0, 0))
+    def update_preview(self):
+        self.render_timer.stop()
+        try:
+            config = self.current_config()
+            image = render_image(config)
+        except (OSError, ValueError) as exc:
+            self.statusBar().showMessage(f"预览失败：{exc}")
+            return False
+        self.config, self.image = config, image
+        self.view.set_image(image)
+        self.view.region.setRect(config.x, config.y, config.rect_width, config.rect_height)
+        self.canvas_size.setText(f"{image.width()} × {image.height()} px")
+        for key, extent in (
+            ("x", image.width()),
+            ("y", image.height()),
+            ("rect_width", image.width()),
+            ("rect_height", image.height()),
+        ):
+            self.sliders[key].setMaximum(max(extent, self.controls[key].value()))
+        self.statusBar().showMessage("就绪 · 预览已更新")
+        return True
 
-        # 显示颜色选择框并等待用户选择
-        if color_dialog.exec() == QColorDialog.DialogCode.Accepted:
-            # 获取用户选择的颜色
-            self.font_color = color_dialog.currentColor().name()
-            self.label_font_color.setText('当前字体颜色：'+self.font_color)
-            self.updateView()    
-
-    def updateView(self):
-        current_text = self.combo_box.currentText()
-        font_path='./fonts/'+current_text
-        self.label_x.setText(f"文字坐标x：{self.slider_x.value()}")
-        self.label_y.setText(f"文字坐标y：{self.slider_y.value()}")
-        self.label_font_size.setText(f"文字大小：{self.slider_font_size.value()}")
-        self.label_font_weight.setText(f"文字粗细：{self.slider_font_weight.value()}")
-        self.label_font_color.setText(f"当前字体颜色：{self.font_color}")
-        self.label_font_spacing.setText(f"文字间隔：{round(self.slider_font_spacing.value()/20,2)}")
-        self.label_line_spacing.setText(f"行间隔x：{round(self.slider_line_spacing.value()/20,2)}")
-        self.label_width.setText(f"文字显示宽度：{self.slider_width.value()}")
-        self.label_height.setText(f"文字显示高度：{self.slider_height.value()}")
-
-        text_tmp=self.text_edit.toPlainText().replace(' ','&nbsp;').replace('\n','<br>')
-
-        self.view.addTextItem(text=text_tmp, 
-                        bg_path=self.bg_path,
-                        font_path=font_path,
-                        font_color=self.font_color,
-                        font_weight=self.slider_font_weight.value(),
-                        x=self.slider_x.value(),y=self.slider_y.value(),                        
-                        font_size=self.slider_font_size.value(),
-                        font_spacing=round(self.slider_font_spacing.value()/20,2),
-                        line_spacing=round(self.slider_line_spacing.value()/40,2),
-                        rect_width=self.slider_width.value(), 
-                        rect_height=self.slider_height.value()
-                        )
-
-class GraphicsView(QGraphicsView):
-    def __init__(self, scene, parent):
-        super().__init__(scene, parent)
-        
-        self.setStyleSheet('GraphicsView{background-color:#FDF6E3;}')
-        self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)  # 启用拖拽模式
-
-        self.drawing_rect = None
-        self.origin = None
-        self.is_drawing = False
-        self.coordinate_text_items = {}  # 存储坐标信息的字典，以矩形为键
-
-    def wheelEvent(self, event):
-        modifiers = event.modifiers()
-        if modifiers == Qt.KeyboardModifier.ControlModifier:
-            # 只有在按下 Ctrl 键时才缩放
-            factor = 1.2  # 缩放因子
-            if event.angleDelta().y() < 0:
-                factor = 1.0 / factor  # 对于负的滚轮事件进行缩小
-            self.scale(factor, factor)
-
-    def mouseDoubleClickEvent(self, event):
-        super().mouseDoubleClickEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton:
-            # 获取鼠标双击的位置
-            double_click_position = event.pos()
-            # 获取双击位置相对于原图的像素位置
-            double_click_scene_position = self.mapToScene(double_click_position)
-            # 获取点击位置相对于原图的像素位置
-            item = self.scene().itemAt(double_click_scene_position, self.transform())
-            if isinstance(item, QGraphicsRectItem):
-                # 删除被点击的矩形的坐标信息
-                rect_key = id(item)
-                if rect_key in self.coordinate_text_items:
-                    self.removeCoordinateTextItems(self.coordinate_text_items[rect_key])
-                # 删除被点击的矩形
-                self.scene().removeItem(item)
-
-    def mouseMoveEvent(self, event):
-        super().mouseMoveEvent(event)
-
-        if event.buttons() & Qt.MouseButton.RightButton:
-            if self.is_drawing and self.origin is not None:
-                # 获取鼠标当前位置
-                current_position = event.pos()
-
-                # 获取当前位置相对于原图的像素位置
-                current_scene_position = self.mapToScene(current_position)
-
-                # 更新矩形的大小
-                self.drawing_rect.setRect(QRectF(self.origin, current_scene_position))
-
-        # 实时显示图像
-        scene_rect = self.sceneRect()
-        self.setSceneRect(scene_rect)
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-
-        if event.button() == Qt.MouseButton.RightButton:
-            if self.is_drawing and self.origin is not None:
-                self.is_drawing = False
-
-                # 获取鼠标释放的位置
-                release_position = event.pos()
-
-                # 获取释放位置相对于原图的像素位置
-                release_scene_position = self.mapToScene(release_position)
-
-                # 更新矩形的大小
-                self.drawing_rect.setRect(QRectF(self.origin, release_scene_position))
-
-                # 显示矩形的坐标信息
-                self.showRectCoordinates(self.drawing_rect)
-
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-
-        if event.button() == Qt.MouseButton.RightButton:
-            if not self.is_drawing:
-                # 获取鼠标点击的位置
-                click_position = event.pos()
-
-                # 获取点击位置相对于原图的像素位置
-                scene_position = self.mapToScene(click_position)
-                self.origin = scene_position
-                self.is_drawing = True
-
-                # 创建一个新的矩形
-                self.drawing_rect = QGraphicsRectItem(QRectF(self.origin, self.origin))
-                self.scene().addItem(self.drawing_rect)
-
-    def showRectCoordinates(self, rect_item):
-        # 获取矩形的左上角和右下角相对于图片的坐标
-        rect_top_left = rect_item.rect().topLeft()
-        rect_bottom_right = rect_item.rect().bottomRight()
-        # 将坐标信息显示在矩形的左上角和右下角
-        # 在矩形的左上角显示坐标信息
-        text_item_top_left = QGraphicsTextItem(f"({int(rect_top_left.x())}, {int(rect_top_left.y())})")
-        text_item_top_left.setFont(QFont('Arial', 10))
-        text_item_top_left.setDefaultTextColor(Qt.GlobalColor.red)
-        text_item_top_left.setPos(rect_top_left.x() + 5, rect_top_left.y() - 20)
-        self.scene().addItem(text_item_top_left)
-        # 在矩形的右下角显示坐标信息
-        text_item_bottom_right = QGraphicsTextItem(f"({int(rect_bottom_right.x())}, {int(rect_bottom_right.y())})")
-        text_item_bottom_right.setFont(QFont('Arial', 10))
-        text_item_bottom_right.setDefaultTextColor(Qt.GlobalColor.red)
-        text_item_bottom_right.setPos(rect_bottom_right.x() - 50, rect_bottom_right.y() + 5)
-        self.scene().addItem(text_item_bottom_right)
-        # 将矩形对象作为键，将坐标信息文本项存储到字典中
-        rect_key = id(rect_item)
-        self.coordinate_text_items[rect_key] = [text_item_top_left, text_item_bottom_right]
-
-    def removeCoordinateTextItems(self, text_items):
-        # 从场景中删除坐标信息文本项
-        for text_item in text_items:
-            self.scene().removeItem(text_item)
-
-        # 清空字典中的坐标信息
-        text_items.clear()
-    def addTextItem(self, text,
-                    bg_path='./bgs/letter.png',
-                    font_path="./fonts/hand.ttf",font_size=12, 
-                    font_color='black',
-                    font_weight=600,
-                    x=100,y=100,
-                    font_spacing=0, line_spacing=1.2, 
-                    rect_width=500, rect_height=50):
-        # 清除先前的文本项
-        self.scene().clear()
-        #加载背景图片
-        pixmap = QPixmap(bg_path)
-        item = QGraphicsPixmapItem(pixmap)
-        self.scene().addItem(item)
-        self.scene().setSceneRect(0, 0, 5000, 5000)
-        # 创建一个QGraphicsTextItem
-        text_item = QGraphicsTextItem()
-        text_item.setPos(x, y)
-        # 加载本地字体文件,设置字体大小
-        font_id = QFontDatabase.addApplicationFont(font_path)
-        font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-        font = QFont(font_family,font_size)
-        text_item.setFont(font)
-        # 使用 HTML 样式设置文本，包括换行和调整行间距、文字间距
-        html_text = f"<div style='font-weight: {font_weight};color:{font_color};font-size:{font_size}pt; line-height:{line_spacing * 100}%; letter-spacing:{font_spacing}em;'>{text}</div>"
-        text_item.setHtml(html_text)
-        # 设置文本项的边界矩形
-        text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
-        text_item.setTextWidth(rect_width)
-        # 将文本项添加到场景中
-        self.scene().addItem(text_item)
-    
-    def exportSceneToImage(self):
-        # 获取场景的范围
-        scene_rect = self.sceneRect()
-        # 获取场景内容的大小
-        content_rect = self.scene().itemsBoundingRect()
-        # 使用场景内容的大小来确定导出图片的大小
-        image_size = content_rect.size().toSize()
-        # 弹出输入对话框获取用户输入的文件名，默认为"img_1.png"
-        file_name, _ = QInputDialog.getText(self, '导出图片', '输入文件名', text='img_1.png')
-        # 如果用户取消了输入，则返回
-        if not file_name:
+    def use_config(self, config):
+        try:
+            render_image(config)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "无法加载", str(exc))
             return
-        # 创建一个 QImage 对象，使用 ARGB32_Premultiplied 格式，支持透明度
-        image = QImage(image_size, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)  # 使用透明背景
-        # 创建一个QPainter对象
-        painter = QPainter(image)
-        # 将场景渲染到QImage中，以内容的大小为主
-        self.scene().render(painter, QRectF(image.rect()), content_rect)
-        # 结束绘制
-        painter.end()
-        # 保存QImage为图片文件
-        image.save(file_name)
-        QMessageBox.information(self, '提示', '图片已保存在当前目录下！', QMessageBox.StandardButton.Ok)
+        self.apply_config(config)
+        self.update_preview()
+        self.view.fit_page()
 
-    # def exportSceneToImage(self):
-    #     # 获取场景的范围
-    #     scene_rect = self.sceneRect()
-    #      # 弹出输入对话框获取用户输入的文件名，默认为"img_1.png"
-    #     file_name, _ = QInputDialog.getText(self, '导出图片', '输入文件名', text='img_1.png')
-    #     # 如果用户取消了输入，则返回
-    #     if not file_name:
-    #         return
-    #     # 创建一个QImage对象
-    #     image = QImage(scene_rect.size().toSize(), QImage.Format.Format_ARGB32)
-    #     image.fill(Qt.GlobalColor.white)
-    #     # 创建一个QPainter对象
-    #     painter = QPainter(image)
-    #     # 将场景渲染到QImage中
-    #     self.scene().render(painter, QRectF(image.rect()), scene_rect)
-    #     # 结束绘制
-    #     painter.end()
-    #     # 保存QImage为图片文件
-    #     image.save(file_name)
-    #     QMessageBox.information(self, '提示', '图片已保存在当前目录下！', QMessageBox.StandardButton.Ok)
+    def choose_background(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择背景", "", IMAGE_FILTER)
+        if path:
+            self.use_config(replace(self.current_config(), bg_path=path))
+
+    def create_background(self):
+        dialog = ImageCreator(self)
+        dialog.created.connect(
+            lambda path: self.use_config(replace(self.current_config(), bg_path=path))
+        )
+        dialog.exec()
+
+    def choose_font(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择字体", "", "字体 (*.ttf *.otf *.ttc)")
+        if path:
+            self.use_config(replace(self.current_config(), font_path=path))
+
+    def choose_color(self):
+        color = QColorDialog.getColor(QColor(self.config.font_color), self)
+        if color.isValid():
+            self.config = replace(self.current_config(), font_color=color.name())
+            self.update_ink()
+            self.schedule_preview()
+
+    def open_preset(self):
+        path, _ = QFileDialog.getOpenFileName(self, "打开预设", "", "JSON (*.json)")
+        if path:
+            try:
+                self.use_config(load_preset(path))
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "无法打开预设", str(exc))
+
+    def write_preset(self):
+        if not self.update_preview():
+            return
+        path = choose_save_path(self, "保存预设", "星笺.json", "JSON (*.json)")
+        if path:
+            try:
+                save_preset(self.config, path)
+                self.statusBar().showMessage(f"预设已保存：{path}")
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "无法保存预设", str(exc))
+
+    def export_image(self):
+        if not self.update_preview():
+            QMessageBox.warning(self, "无法导出", self.statusBar().currentMessage())
+            return
+        path = choose_save_path(self, "导出图片", "星笺.png", SAVE_FILTER)
+        if path:
+            try:
+                save_image(self.image, path, overwrite=True)
+                self.statusBar().showMessage(f"图片已保存：{path}")
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "导出失败", str(exc))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setApplicationName("星笺")
+    app.setApplicationDisplayName("星笺")
     viewer = HandFontWindow()
+    viewer.show()
     sys.exit(app.exec())

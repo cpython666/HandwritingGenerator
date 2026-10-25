@@ -1,0 +1,24 @@
+[project]
+name = "handwriting-generator"
+version = "0.2.0"
+description = "星笺 · 让文字，带一点星光。本地手写图片生成器，提供桌面、CLI 和可选 MCP。"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.7,<7"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.26,<2"]
+
+[dependency-groups]
+dev = ["ruff>=0.14,<1"]
+build = ["pyinstaller>=6.22,<7", "Pillow>=12,<13"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["test", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
